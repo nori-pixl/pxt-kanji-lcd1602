@@ -1,6 +1,6 @@
 kanjiLCD.init(0x27)
-kanjiLCD.showKanji("月", 0)
+kanjiLCD.showKanji("仙", 0)
 kanjiLCD.showText("12/31", 4, 0)
 basic.pause(2000)
 kanjiLCD.clear()
-kanjiLCD.showSequence("月火水木金土日", 0, 800)
+kanjiLCD.showSequence("仙台のひらがなカタカナ漢字", 0, 800)
