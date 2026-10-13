@@ -14,6 +14,9 @@
         "test.ts"
     ],
     "public": true,
+    "disablesVariants": [
+        "mbdal"
+    ],
     "targetVersions": {
         "target": "5.0.12"
     }
