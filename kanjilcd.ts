@@ -1,14 +1,11 @@
 /**
  * LCD1602(I2C, PCF8574バックパック)に漢字・ひらがな・カタカナを表示するライブラリ。
- * 東雲フォント(データは15x16ドット)を、1文字あたり「幅2マス(10x16)」または「幅3マス(15x16)」で表示する。
- *   幅2マス: CGRAM 4個/文字 → 同時に【2文字】まで(例: 日曜)。  ← 初期値
- *   幅3マス: CGRAM 6個/文字 → 同時に1文字だけ。いちばん綺麗。
- * 幅は「漢字LCD 1文字の幅 ○ マス」ブロック(setWidth)で切り替える。
+ * 東雲フォント16x16(データは15x16に縮小済み)を、実行時にさらに 2x2マス(10x16ドット)へ縮め、
+ * CGRAM 0〜3 / 4〜7 の2スロットに登録して表示する。
+ * → 全角文字を同時に【2文字】表示できる(例: 日曜)。
  *
  * 文字の探し方: 収録文字を並べた文字列 KEYS から indexOf で探す(文字コードの数値は使わない)。
- * 実行環境によって文字列が UTF-16 単位でも UTF-8 バイト単位でも動くように、
- * 初期化時に KEYS の並びから単位を判定し、見つけた位置は KEYS 側で照合してから使う。
- * kanjifont.ts は変更不要。
+ * kanjifont.ts は変更不要(15x16のまま)。
  */
 
 //% weight=90 color=#2E86AB icon="\uf2bb" block="漢字LCD"
@@ -19,25 +16,21 @@ namespace kanjiLCD {
     let customBufs: Buffer[] = []
     let unit = 0
 
-    let cells = 2                 // 1文字の幅(マス数): 2 または 3
-    let slotCol: number[] = [-1, -1]  // 各スロットがいま表示している桁(-1 = 未使用)
+    // 2つのスロットがいま表示している桁(-1 = 未使用)と、最後に使ったスロット
+    let slotCol: number[] = [-1, -1]
     let lastSlot = 1
 
-    // 縮小のとき、出力ドットの何%以上が点灯なら点灯にするか(小さいほど線が残り、大きいほど細く軽くなる)
-    const FILL = 30
+    // 15ドット幅 → 10ドット幅の対応。出力の列 j は、元の列 LO[j]〜HI[j] のどれか1つでも点灯なら点灯。
+    const COL_LO = [0, 1, 3, 4, 6, 7, 9, 10, 12, 13]
+    const COL_HI = [1, 2, 4, 5, 7, 8, 10, 11, 13, 14]
 
     // ---------- 低レベルI2C ----------
-    // 依存している拡張 i2cLCD1602 (makecode-extensions/i2cLCD1602) と同じ手順で送る:
-    //   nibble ごとに「E=0 → E=1 → E=0」の3回書き込み、1回ごとに1ms待つ。
-    function setreg(d: number) {
-        pins.i2cWriteNumber(addr, d, NumberFormat.Int8LE)
-        basic.pause(1)
+    function wr(v: number) {
+        pins.i2cWriteBuffer(addr, pins.createBufferFromArray([v | backlight]))
     }
     function nib(v: number, rs: number) {
-        let d = (v & 0xF0) + backlight + rs
-        setreg(d)
-        setreg(d + 4)
-        setreg(d)
+        wr((v & 0xF0) | rs | 0x04)
+        wr((v & 0xF0) | rs)
     }
     function send(v: number, rs: number) {
         nib(v, rs)
@@ -45,10 +38,10 @@ namespace kanjiLCD {
     }
 
     // ---------- 文字の探索 ----------
-    // 全角1文字が KEYS の何単位ぶんか。KEYS の2文字目「。」の位置で判定する
-    // (UTF-16単位なら1、UTF-8バイト単位なら3)。
+    // 全角1文字が文字列の何単位ぶんか。UTF-16単位なら1、UTF-8バイト単位なら3。
+    // (KEYS は3バイト文字だけでできているので、長さで判定できる)
     function getUnit(): number {
-        if (unit == 0) unit = KEYS.indexOf("。") >= 3 ? 3 : 1
+        if (unit == 0) unit = KEYS.length > GLYPH_COUNT ? 3 : 1
         return unit
     }
 
@@ -63,31 +56,12 @@ namespace kanjiLCD {
         return -1
     }
 
-    // 収録文字の番号(組み込み)。無ければ -1。
-    // indexOf で見つけた位置に、c とまったく同じ文字が並んでいるか照合する(途中のバイトへの誤一致を防ぐ)。
+    // 収録文字の番号(組み込み)。無ければ -1
     function findIndex(c: string): number {
         if (c.length == 0) return -1
         let p = KEYS.indexOf(c)
         if (p < 0) return -1
-        let u = getUnit()
-        if (KEYS.substr(p, u) != c) return -1
-        return Math.idiv(p, u)
-    }
-
-    function found(c: string): boolean {
-        return c.length > 0 && (customIndex(c) >= 0 || findIndex(c) >= 0)
-    }
-
-    // s の i 文字目から始まる全角1文字(収録されているもの)を返す。無ければ ""。
-    function pickChar(s: string, i: number): string {
-        let c = s.substr(i, 1)
-        if (found(c)) return c
-        let u = getUnit()
-        if (u > 1) {
-            c = s.substr(i, u)
-            if (found(c)) return c
-        }
-        return ""
+        return getUnit() == 3 ? Math.idiv(p, 3) : p
     }
 
     // ---------- 表示 ----------
@@ -97,30 +71,22 @@ namespace kanjiLCD {
         return (buf.getUint8(byte) >> (7 - (bitpos & 7))) & 1
     }
 
-    // グリフを cells マス幅に縮め(cells=3 ならそのまま)、スロット slot の CGRAM に書き込む
+    // グリフを 10x16 に縮めて、スロット slot (0か1) の CGRAM 4個に書き込む
     function writeGlyph(buf: Buffer, base: number, slot: number) {
-        let dw = cells * 5          // 出力のドット幅
-        let per = cells * 2         // 1文字あたりのCGRAM数
-        for (let c = 0; c < per; c++) {
-            let cx = c % cells
-            let ry = c < cells ? 0 : 1
-            send(0x40 | ((slot * per + c) << 3), 0) // CGRAM の書き込み位置
+        for (let c = 0; c < 4; c++) {
+            let cx = c % 2          // 左右のマス
+            let ry = c < 2 ? 0 : 1  // 上段/下段
+            send(0x40 | ((slot * 4 + c) << 3), 0) // CGRAM の書き込み位置
             for (let y = 0; y < 8; y++) {
                 let row = ry * 8 + y
                 let v = 0
                 for (let k = 0; k < 5; k++) {
-                    // 出力の列 j は、元の15列を dw 分割した範囲 [lo, hi) (単位: 1/dw 列)に当たる
                     let j = cx * 5 + k
-                    let lo = j * 15
-                    let hi = lo + 15
-                    let sum = 0
-                    for (let i = Math.idiv(lo, dw); i < 15 && i * dw < hi; i++) {
-                        if (getBit(buf, base, row * 15 + i) == 1) {
-                            let o = Math.min(hi, (i + 1) * dw) - Math.max(lo, i * dw)
-                            if (o > 0) sum += o
-                        }
+                    let bit = 0
+                    for (let s = COL_LO[j]; s <= COL_HI[j]; s++) {
+                        if (getBit(buf, base, row * 15 + s) == 1) bit = 1
                     }
-                    if (sum * 100 >= 15 * FILL) v |= 1 << (4 - k)
+                    v |= bit << (4 - k)
                 }
                 send(v, 1)
             }
@@ -130,19 +96,21 @@ namespace kanjiLCD {
     // どのスロットに描くか。同じ桁(または重なる桁)に出ているスロットがあればそれを使い、
     // なければ前回と別のスロットを使う。
     function pickSlot(col: number): number {
-        let slots = cells == 2 ? 2 : 1
-        for (let i = 0; i < slots; i++) {
-            if (slotCol[i] >= 0 && Math.abs(slotCol[i] - col) < cells) return i
+        for (let i = 0; i < 2; i++) {
+            if (slotCol[i] >= 0 && Math.abs(slotCol[i] - col) < 2) return i
         }
-        if (slots == 1) return 0
         lastSlot = 1 - lastSlot
         return lastSlot
     }
 
-    // c は全角1文字ぶんの文字列(found(c) が真のもの)
-    function showChar(c: string, col: number) {
+    // c は全角1文字ぶんの文字列
+    function showChar(c: string, col: number): boolean {
         let k = customIndex(c)
-        let idx = k >= 0 ? -1 : findIndex(c)
+        let idx = -1
+        if (k < 0) {
+            idx = findIndex(c)
+            if (idx < 0) return false
+        }
         let slot = pickSlot(col)
         slotCol[slot] = col
         if (k >= 0) {
@@ -150,28 +118,36 @@ namespace kanjiLCD {
         } else {
             writeGlyph(BLOCKS[Math.idiv(idx, BLOCK_SIZE)], (idx % BLOCK_SIZE) * 30, slot)
         }
-        let b = slot * cells * 2
+        let b = slot * 4
         send(0x80 | col, 0)
-        for (let i = 0; i < cells; i++) send(b + i, 1)             // 上段
+        send(b, 1); send(b + 1, 1)          // 上段
         send(0xC0 | col, 0)
-        for (let i = 0; i < cells; i++) send(b + cells + i, 1)     // 下段
+        send(b + 2, 1); send(b + 3, 1)      // 下段
+        return true
     }
 
     // ---------- ブロック ----------
     /**
      * LCDを初期化する。アドレスは 0x27 か 0x3F が多い。
-     * 拡張 i2cLCD1602 の初期化もここで行う。i2cLCD1602 を別に初期化済みでも、
-     * 漢字LCDが使うアドレス(初期値 39)を合わせるため、このブロックを呼ぶ。
      * @param address I2Cアドレス, eg: 39
      */
     //% blockId=kanjilcd_init block="漢字LCDを初期化 I2Cアドレス %address"
     //% address.defl=39
     //% weight=100
     export function init(address: number = 0x27) {
-        addr = address == 0 ? 0x27 : address
+        addr = address
         slotCol = [-1, -1]
-        backlight = 0x08
-        I2C_LCD1602.LcdInit(address)        // 初期化は拡張 i2cLCD1602 にまかせる
+        basic.pause(50)
+        nib(0x30, 0)
+        basic.pause(5)
+        nib(0x30, 0)
+        nib(0x30, 0)
+        nib(0x20, 0)
+        send(0x28, 0) // 4bit, 2行
+        send(0x0C, 0) // 表示ON
+        send(0x06, 0) // 右へ進む
+        send(0x01, 0) // クリア
+        basic.pause(2)
     }
 
     /**
@@ -180,7 +156,8 @@ namespace kanjiLCD {
     //% blockId=kanjilcd_clear block="漢字LCD 画面を消す"
     //% weight=95
     export function clear() {
-        I2C_LCD1602.clear()
+        send(0x01, 0)
+        basic.pause(2)
         slotCol = [-1, -1]
     }
 
@@ -192,26 +169,12 @@ namespace kanjiLCD {
     //% weight=94
     export function setBacklight(on: boolean) {
         backlight = on ? 0x08 : 0x00
-        if (on) I2C_LCD1602.BacklightOn()
-        else I2C_LCD1602.BacklightOff()
+        wr(0)
     }
 
     /**
-     * 1文字の幅をマス数で決める。2マス=同時に2文字まで、3マス=1文字だけ(綺麗)。
-     * @param w 2 または 3, eg: 2
-     */
-    //% blockId=kanjilcd_width block="漢字LCD 1文字の幅 %w マス"
-    //% w.min=2 w.max=3 w.defl=2
-    //% weight=92
-    export function setWidth(w: number) {
-        cells = w >= 3 ? 3 : 2
-        slotCol = [-1, -1]
-        lastSlot = 1
-    }
-
-    /**
-     * 漢字・ひらがな・カタカナを1文字表示する(縦2マス、横は幅の設定どおり)。
-     * 幅2マスなら同時に2文字まで。桁は幅の分だけ離して指定する(例: 0 と 2)。
+     * 漢字・ひらがな・カタカナを1文字表示する(2マス x 2段)。同時に2文字まで表示できる。
+     * 桁は2つ以上離して指定する(例: 0 と 2)。
      * @param ch 表示する文字(1文字), eg: "日"
      * @param col 左端の桁(0〜14), eg: 0
      */
@@ -219,9 +182,9 @@ namespace kanjiLCD {
     //% ch.defl="日" col.min=0 col.max=14 col.defl=0
     //% weight=90
     export function showKanji(ch: string, col: number) {
-        let c = pickChar(ch, 0)
-        if (c.length == 0) return
-        showChar(c, col)
+        let u = getUnit()
+        if (ch.length < u) return
+        showChar(ch.substr(0, u), col)
     }
 
     /**
@@ -234,19 +197,14 @@ namespace kanjiLCD {
     //% text.defl="仙台です" col.min=0 col.max=14 col.defl=0 ms.defl=800
     //% weight=85
     export function showSequence(text: string, col: number, ms: number = 800) {
+        let u = getUnit()
         let i = 0
         while (i < text.length) {
             if (text.charCodeAt(i) < 128) {
                 i += 1 // 英数字は読み飛ばす
             } else {
-                let c = pickChar(text, i)
-                if (c.length == 0) {
-                    i += getUnit()
-                } else {
-                    showChar(c, col)
-                    basic.pause(ms)
-                    i += c.length
-                }
+                if (showChar(text.substr(i, u), col)) basic.pause(ms)
+                i += u
             }
         }
     }
@@ -261,7 +219,10 @@ namespace kanjiLCD {
     //% s.defl="12/31" col.min=0 col.max=15 col.defl=4 row.min=0 row.max=1
     //% weight=80
     export function showText(s: string, col: number, row: number) {
-        I2C_LCD1602.ShowString(s, col, row)
+        send((row == 0 ? 0x80 : 0xC0) | col, 0)
+        for (let i = 0; i < s.length; i++) {
+            send(s.charCodeAt(i), 1)
+        }
     }
 
     /**
@@ -271,18 +232,23 @@ namespace kanjiLCD {
     //% ch.defl="日"
     //% weight=70 advanced=true
     export function hasKanji(ch: string): boolean {
-        return pickChar(ch, 0).length > 0
+        let u = getUnit()
+        if (ch.length < u) return false
+        let c = ch.substr(0, u)
+        return customIndex(c) >= 0 || findIndex(c) >= 0
     }
 
     /**
      * 診断用: 「文字列の長さ/収録番号/文字列の単位」を文字列で返す。表示できないときの調査に使う。
-     * @param ch 調べる文字, eg: "日"
+     * @param ch 調べる文字, eg: "月"
      */
     //% blockId=kanjilcd_debug block="漢字LCD 診断 %ch"
-    //% ch.defl="日"
+    //% ch.defl="月"
     //% weight=65 advanced=true
     export function debugInfo(ch: string): string {
-        return "" + ch.length + "/" + findIndex(pickChar(ch, 0)) + "/" + getUnit()
+        let u = getUnit()
+        let c = ch.substr(0, u)
+        return "" + ch.length + "/" + findIndex(c) + "/" + u
     }
 
     /**
@@ -308,4 +274,4 @@ namespace kanjiLCD {
             customBufs.push(buf)
         }
     }
-            }
+                    }
