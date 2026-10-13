@@ -9,10 +9,16 @@
  * 3種類以上の字を表示するとき、このライブラリは自動で「2種類ずつのページ」に分けて
  * 一定時間ごとに切り替えて表示する(何文字でも表示できる)。
  *
- * 文字の探し方: 文字を UTF-8 のバイト列(Buffer.fromUTF8)に直して Unicode の数値を自分で計算し、
- * コード表(KANJI_CODES / KANA_CODES)から二分探索する。
- * (MakeCode の charCodeAt は漢字で下位1バイトしか返さず、「仙」(0x4ED9)と「ベ」(0x30D9)のように
- *  下位バイトが同じ文字が取り違えられるため、charCodeAt と indexOf は文字の判定に使わない)
+ * 文字の探し方: 文字コード(Unicode)の数値を、コード表(KANJI_CODES / KANA_CODES)から二分探索する。
+ *
+ * 【重要】MakeCode の実機(古い micro:bit 環境)では、文字列に入れた全角文字は下位1バイトしか
+ * プログラムに届かないことがある(「仙」0x4ED9 と「ベ」0x30D9 が同じ 0xD9 になる)。
+ * そこでこのライブラリは次のように使い分ける。
+ *   ・文字コードがちゃんと取れる環境 … 文字列(漢字を含む)をそのまま使える
+ *   ・下位1バイトしか取れない環境   … ひらがな・カタカナ・記号は文字列から推測して復元できる。
+ *                                     漢字は文字列では判別できないので「文字コード」(数値)で指定する
+ *                                     (showCode / showCodes。例: 仙 = 20185)。
+ *   どちらの環境かは「漢字LCD 診断」の最後の数字(0=正常 1=下位1バイトのみ)で分かる。
  */
 
 //% weight=90 color=#2E86AB icon="\uf2bb" block="漢字LCD"
@@ -23,6 +29,7 @@ namespace kanjiLCD {
     let customBufs: Buffer[] = []
     let busy = false
     let lastLen = 1
+    let lossy = -1   // 1: 下位1バイトしか取れない環境 / 0: 正常 / -1: 未判定
 
     // 画面に置いた全角文字の一覧(置いた順)。各文字は2桁ぶんの幅。
     let items: number[] = []
@@ -73,34 +80,36 @@ namespace kanjiLCD {
         return -1
     }
 
-    // UTF-8 のバイト列 b の i バイト目から始まる1文字の文字コード(Unicode)を返す。
-    // その文字のバイト数は lastLen に入る。読めないときは -1。
-    function cpAt(b: Buffer, i: number): number {
-        let c = b.getUint8(i)
+    // 文字列の中身の形を判定する(最初の1回だけ)。
+    //   "あ" の長さが2以上 → UTF-8のバイト列(全角1文字=3バイト)
+    //   "あ" の文字コードが256未満 → 下位1バイトしか取れない環境
+    function isLossy(): boolean {
+        if (lossy < 0) lossy = ("あ".length < 3 && "あ".charCodeAt(0) < 256) ? 1 : 0
+        return lossy == 1
+    }
+
+    // 文字列 s の i 文字目(UTF-8バイト列なら i バイト目)の文字コード。その文字の長さは lastLen に入る。
+    function codeAt(s: string, i: number): number {
+        let c = s.charCodeAt(i)
         lastLen = 1
-        if (c < 0x80) return c
-        if (c >= 0xF0) {
-            lastLen = 4
-            return -1
-        }
-        if (c >= 0xE0) {
-            if (i + 2 >= b.length) return -1
+        if ("あ".length >= 3 && c >= 0xE0 && i + 2 < s.length) {
+            // UTF-8 のバイト列として届いている場合: 3バイトを1文字に戻す
             lastLen = 3
-            return ((c & 0x0F) << 12) | ((b.getUint8(i + 1) & 0x3F) << 6) | (b.getUint8(i + 2) & 0x3F)
+            return ((c & 0x0F) << 12) | ((s.charCodeAt(i + 1) & 0x3F) << 6) | (s.charCodeAt(i + 2) & 0x3F)
         }
-        if (c >= 0xC0) {
-            if (i + 1 >= b.length) return -1
-            lastLen = 2
-            return ((c & 0x1F) << 6) | (b.getUint8(i + 1) & 0x3F)
+        if (isLossy()) {
+            // 下位1バイトしか取れない環境: ひらがな(0x3041〜)・カタカナ(0x30A1〜)・記号(0x3001〜)だけ復元する
+            if (c >= 0x41 && c <= 0x93) return 0x3000 + c
+            if (c >= 0xA1 && c <= 0xFC) return 0x3000 + c
+            if (c >= 0x01 && c <= 0x0F) return 0x3000 + c
         }
-        return -1
+        return c
     }
 
     // 文字列 s の最初の1文字の文字コード。空なら -1
     function firstCode(s: string): number {
-        let b = Buffer.fromUTF8(s)
-        if (b.length == 0) return -1
-        return cpAt(b, 0)
+        if (s.length == 0) return -1
+        return codeAt(s, 0)
     }
 
     // 2バイトずつ昇順に並んだコード表 codes(count個)から code を二分探索。番号 or -1
@@ -393,16 +402,15 @@ namespace kanjiLCD {
      */
     //% blockId=kanjilcd_string block="漢字LCD 文字列 %text を 桁 %col から %step 桁おきに表示"
     //% text.defl="あいうえお" col.min=0 col.max=14 col.defl=0 step.min=2 step.max=8 step.defl=2
-    //% weight=88
+    //% weight=87
     export function showString(text: string, col: number, step: number = 2) {
         if (step < 2) step = 2
-        let b = Buffer.fromUTF8(text)
         let c = col
         let i = 0
         let any = false
         lock()
-        while (i < b.length) {
-            let g = cpAt(b, i)
+        while (i < text.length) {
+            let g = codeAt(text, i)
             i += lastLen
             if (g >= 128) {
                 if (addItem(g, c)) {
@@ -413,6 +421,84 @@ namespace kanjiLCD {
         }
         if (any) refresh(false)
         unlock()
+    }
+
+    /**
+     * 文字コード(Unicode の数値)で文字を1つ表示する。漢字はこちらが確実。
+     * 例: 仙=20185(0x4ED9)、日=26085、曜=26332。
+     * @param code 文字コード, eg: 20185
+     * @param col 左端の桁(0〜14), eg: 0
+     */
+    //% blockId=kanjilcd_showcode block="漢字LCD 文字コード %code を 桁 %col に表示"
+    //% code.defl=20185 col.min=0 col.max=14 col.defl=0
+    //% weight=89
+    export function showCode(code: number, col: number) {
+        lock()
+        if (addItem(code, col)) refresh(true)
+        unlock()
+    }
+
+    /**
+     * 文字コードの並びを左から順に表示する(JavaScript用)。
+     * 例: kanjiLCD.showCodes([26085, 26332], 0, 2)  // 日曜
+     */
+    export function showCodes(codes: number[], col: number, step: number = 2) {
+        if (step < 2) step = 2
+        let c = col
+        let any = false
+        lock()
+        for (let i = 0; i < codes.length; i++) {
+            if (addItem(codes[i], c)) {
+                any = true
+                c += step
+            }
+        }
+        if (any) refresh(false)
+        unlock()
+    }
+
+    // "20185 21488, 0x3042" のような文字(半角の数字と区切りだけ)から、文字コードの並びを作る。
+    // 10進数、または 0x で始まる16進数。数字以外はすべて区切りとして扱う。
+    function parseCodes(text: string): number[] {
+        let out: number[] = []
+        let n = 0
+        let has = false
+        let hexMode = false
+        for (let i = 0; i <= text.length; i++) {
+            let c = i < text.length ? text.charCodeAt(i) : 32
+            let d = -1
+            if (c >= 48 && c <= 57) d = c - 48
+            else if (hexMode && c >= 65 && c <= 70) d = c - 55
+            else if (hexMode && c >= 97 && c <= 102) d = c - 87
+            if (d >= 0) {
+                n = n * (hexMode ? 16 : 10) + d
+                has = true
+            } else if ((c == 120 || c == 88) && has && n == 0 && !hexMode) {
+                hexMode = true // 0x...
+            } else {
+                if (has) out.push(n)
+                n = 0
+                has = false
+                hexMode = false
+            }
+        }
+        return out
+    }
+
+    /**
+     * 文字コードを半角の数字で並べた文字列から、左から順に表示する。ブロック用。
+     * 例: "20185 21488 12398 26085 26332" (仙台の日曜)。区切りは空白かカンマ。0x3042 のような16進も使える。
+     * 数字だけの文字列なので、実機でも文字化けしない。文字コードは変換ページで作れる。
+     * 字の種類が3つ以上になると、2種類ずつ自動でページ切り替えして表示する。
+     * @param codes 文字コードの並び, eg: "20185 21488 12398 26085 26332"
+     * @param col 最初の文字の左端の桁, eg: 0
+     * @param step 1文字ごとの桁の間隔(2以上), eg: 2
+     */
+    //% blockId=kanjilcd_codetext block="漢字LCD 文字コード列 %codes を 桁 %col から %step 桁おきに表示"
+    //% codes.defl="20185 21488 12398 26085 26332" col.min=0 col.max=14 col.defl=0 step.min=2 step.max=8 step.defl=2
+    //% weight=88
+    export function showCodeText(codes: string, col: number, step: number = 2) {
+        showCodes(parseCodes(codes), col, step)
     }
 
     /**
@@ -436,10 +522,9 @@ namespace kanjiLCD {
     //% text.defl="仙台です" col.min=0 col.max=14 col.defl=0 ms.defl=800
     //% weight=85
     export function showSequence(text: string, col: number, ms: number = 800) {
-        let b = Buffer.fromUTF8(text)
         let i = 0
-        while (i < b.length) {
-            let g = cpAt(b, i)
+        while (i < text.length) {
+            let g = codeAt(text, i)
             i += lastLen
             if (g >= 128) {
                 lock()
@@ -480,7 +565,7 @@ namespace kanjiLCD {
     }
 
     /**
-     * 診断用: 「文字数/文字コード/漢字の収録番号/かなの収録番号/UTF-8のバイト数」を文字列で返す。「仙」なら 1/20185/37/-1/3 になる。表示できないときの調査に使う。
+     * 診断用: 「文字数/文字コード/漢字の収録番号/かなの収録番号/環境」を文字列で返す。環境は 0=文字コードが正常に取れる、1=下位1バイトしか取れない。表示できないときの調査に使う。
      * @param ch 調べる文字, eg: "あ"
      */
     //% blockId=kanjilcd_debug block="漢字LCD 診断 %ch"
@@ -488,7 +573,7 @@ namespace kanjiLCD {
     //% weight=65 advanced=true
     export function debugInfo(ch: string): string {
         let g = firstCode(ch)
-        return "" + ch.length + "/" + g + "/" + findIndex(g) + "/" + findKana(g) + "/" + Buffer.fromUTF8(ch).length
+        return "" + ch.length + "/" + g + "/" + findIndex(g) + "/" + findKana(g) + "/" + (isLossy() ? 1 : 0)
     }
 
     /**
