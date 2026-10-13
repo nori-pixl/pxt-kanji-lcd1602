@@ -4,7 +4,8 @@
 使い方:
     python tools/make_font.py tools/shnmk16.bdf                 # ひらがな・カタカナ・記号・JIS第一水準
     python tools/make_font.py tools/shnmk16.bdf --level2        # 第二水準も入れる(約2倍のサイズ)
-    python tools/make_font.py tools/shnmk16.bdf --lite          # 小さい版(ひらがな・カタカナ・記号 + 常用漢字相当の頻出字のみ)
+    python tools/make_font.py tools/shnmk16.bdf --compact       # micro:bit V1に収まる小さい版(約13KB)
+    python tools/make_font.py tools/shnmk16.bdf --lite          # 中間の版(約20KB)
     python tools/make_font.py tools/shnmk16.bdf --extra 仙台     # 追加字を指定
 
 各文字は 15x16 ドット(3x2マス)に縮小し、1ビット/ドットで30バイトに詰める。
@@ -16,6 +17,22 @@ BLOCK = 128  # 1ブロックのグリフ数
 
 LITE_KANJI = (
     "日一国会人年大十二本中長出三同時政事自行社見月分議後前民生連五発間対上部東者党地合市業内相方四定今回新場金員九入選立開手米力学問高代明実円関決子動京全目表戦経通外最言氏現理調体化田当八六約主題下首意法不来作性的要用制治度務強気小七成期公持野協取都和統以機平総加山思家話世受区領多県続進正安設保改数記院女初北午指権心界支第産結百派点教報済書府活原先共得解名交資予川向際査勝面委告軍文反元重近千考判認画海参売利組知案道信策集在件団別物側任引使求所次水半品昨論計死官増係感情投示変打直両式確果容必演歳争談能位置流格疑過局放常状球職与供役構割費付由説難優夫収断石違消神番規術備宅害配警育席訪乗残想声念助労例然限追商葉伝働形景落好退頭負渡失差末守若種美命福望非観察段横深申様財港識呼達良阪候程満敗値突光路科積他処太客否師登易速存飛殺号単座破年運独")
+
+
+COMPACT_KANJI = (
+    "年月日時分秒曜今午前後朝昼夜週毎"
+    "一二三四五六七八九十百千万円零"
+    "火水木金土"
+    "天気晴雨雪曇風雲光温度湿圧"
+    "東西南北上下左右中内外"
+    "大小多少高低長短新古明暗強弱早遅"
+    "人子女男私僕君名"
+    "見聞言話読書行来出入開閉立座食飲寝起歩走止始終使作持待"
+    "電池音楽計画面表示設定決力残量充放"
+    "仙台宮城県市町村京都阪神奈川山海島"
+    "本学校先生仕事会社家国世界"
+    "春夏秋冬花鳥犬猫魚車駅道店米茶酒薬手足目口耳頭体心愛夢空星石林森田"
+    "現在昨注意警告危険安全正誤成功失敗完了停止実行待機接続通信送受返変換選択確認")
 
 
 def load_bdf(path):
@@ -74,6 +91,7 @@ def main():
     path = args.pop(0)
     level2 = "--level2" in args
     lite = "--lite" in args
+    compact = "--compact" in args
     extra = ""
     if "--extra" in args:
         extra = args[args.index("--extra") + 1]
@@ -81,11 +99,14 @@ def main():
     chars = []
     chars += [chr(c) for c in range(0x3041, 0x3094)]          # ひらがな
     chars += [chr(c) for c in range(0x30A1, 0x30F7)]          # カタカナ
-    chars += list("、。，．・：；？！ー～…「」『』（）［］＋－＝＜＞％＃＆＊＠￥＄　")
-    chars += [chr(c) for c in range(0xFF10, 0xFF1A)]          # 全角数字
-    chars += [chr(c) for c in range(0xFF21, 0xFF3B)]          # 全角英大文字
-    chars += [chr(c) for c in range(0xFF41, 0xFF5B)]          # 全角英小文字
-    if lite:
+    chars += list("、。・？！ー「」" if compact else "、。，．・：；？！ー～…「」『』（）［］＋－＝＜＞％＃＆＊＠￥＄　")
+    if not compact:
+        chars += [chr(c) for c in range(0xFF10, 0xFF1A)]      # 全角数字
+        chars += [chr(c) for c in range(0xFF21, 0xFF3B)]      # 全角英大文字
+        chars += [chr(c) for c in range(0xFF41, 0xFF5B)]      # 全角英小文字
+    if compact:
+        chars += list(COMPACT_KANJI)
+    elif lite:
         chars += list(LITE_KANJI)
     else:
         chars += list(kanji_rows(0x30, 0x4F))                 # 第一水準
