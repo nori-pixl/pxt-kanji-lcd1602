@@ -2,15 +2,16 @@
  * LCD1602(I2C, PCF8574バックパック)に漢字・ひらがな・カタカナを表示するライブラリ。
  * 東雲フォント16x16を 3x2マス(15x16ドット)に縮小し、CGRAM 0〜5 に登録して表示する。
  * 同時に表示できる全角文字は1文字。CGRAM 6,7 は使わないので他の用途に使える。
- * 収録: ひらがな・カタカナ・記号・全角英数・JIS第一水準漢字(約2,965字)
+ *
+ * 文字の探し方: 収録文字を並べた文字列 KEYS から indexOf で探す(文字コードの数値は使わない)。
  */
 //% weight=90 color=#2E86AB icon="\uf2bb" block="漢字LCD"
 namespace kanjiLCD {
     let addr = 0x27
     let backlight = 0x08
-    let customCodes: number[] = []
+    let customKeys: string[] = []
     let customBufs: Buffer[] = []
-    let nextPos = 0
+    let unit = 0
 
     // ---------- 低レベルI2C ----------
     function wr(v: number) {
@@ -25,39 +26,31 @@ namespace kanjiLCD {
         nib(v << 4, rs)
     }
 
-    // ---------- 文字コード ----------
-    // 文字列の i 番目の文字のUnicodeコードを返し、次の位置を nextPos に入れる。
-    // MakeCodeの版によって charCodeAt が文字単位でもUTF-8のバイト単位でも動くようにしている。
-    function codeAt(text: string, i: number): number {
-        let c = text.charCodeAt(i)
-        nextPos = i + 1
-        if (c >= 0xE0 && c <= 0xEF && i + 2 < text.length) {
-            let c1 = text.charCodeAt(i + 1)
-            let c2 = text.charCodeAt(i + 2)
-            if (c1 >= 0x80 && c1 <= 0xBF && c2 >= 0x80 && c2 <= 0xBF) {
-                nextPos = i + 3
-                return ((c & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F)
-            }
-        }
-        return c
+    // ---------- 文字の探索 ----------
+    // 全角1文字が文字列の何単位ぶんか。UTF-16単位なら1、UTF-8バイト単位なら3。
+    // (KEYS は3バイト文字だけでできているので、長さで判定できる)
+    function getUnit(): number {
+        if (unit == 0) unit = KEYS.length > GLYPH_COUNT ? 3 : 1
+        return unit
     }
 
     function hexVal(c: number): number {
         return c <= 57 ? c - 48 : (c <= 70 ? c - 55 : c - 87)
     }
 
-    // 組み込みデータの中から code を二分探索する。無ければ -1
-    function findIndex(code: number): number {
-        let lo = 0
-        let hi = GLYPH_COUNT - 1
-        while (lo <= hi) {
-            let mid = (lo + hi) >> 1
-            let v = INDEX.getNumber(NumberFormat.UInt16BE, mid * 2)
-            if (v == code) return mid
-            if (v < code) lo = mid + 1
-            else hi = mid - 1
+    function customIndex(c: string): number {
+        for (let i = 0; i < customKeys.length; i++) {
+            if (customKeys[i] == c) return i
         }
         return -1
+    }
+
+    // 収録文字の番号(組み込み)。無ければ -1
+    function findIndex(c: string): number {
+        if (c.length == 0) return -1
+        let p = KEYS.indexOf(c)
+        if (p < 0) return -1
+        return getUnit() == 3 ? Math.idiv(p, 3) : p
     }
 
     // ---------- 表示 ----------
@@ -76,14 +69,15 @@ namespace kanjiLCD {
         }
     }
 
-    function showCode(code: number, col: number): boolean {
-        let k = customCodes.indexOf(code)
+    // c は全角1文字ぶんの文字列
+    function showChar(c: string, col: number): boolean {
+        let k = customIndex(c)
         if (k >= 0) {
             writeGlyph(customBufs[k], 0)
         } else {
-            let idx = findIndex(code)
+            let idx = findIndex(c)
             if (idx < 0) return false
-            writeGlyph(BLOCKS[idx / BLOCK_SIZE | 0], (idx % BLOCK_SIZE) * 30)
+            writeGlyph(BLOCKS[Math.idiv(idx, BLOCK_SIZE)], (idx % BLOCK_SIZE) * 30)
         }
         send(0x80 | col, 0)
         send(0, 1); send(1, 1); send(2, 1)                 // 上段
@@ -146,8 +140,9 @@ namespace kanjiLCD {
     //% ch.defl="仙" col.min=0 col.max=13 col.defl=0
     //% weight=90
     export function showKanji(ch: string, col: number) {
-        if (ch.length == 0) return
-        showCode(codeAt(ch, 0), col)
+        let u = getUnit()
+        if (ch.length < u) return
+        showChar(ch.substr(0, u), col)
     }
 
     /**
@@ -160,11 +155,15 @@ namespace kanjiLCD {
     //% text.defl="仙台です" col.min=0 col.max=13 col.defl=0 ms.defl=800
     //% weight=85
     export function showSequence(text: string, col: number, ms: number = 800) {
+        let u = getUnit()
         let i = 0
         while (i < text.length) {
-            let code = codeAt(text, i)
-            i = nextPos
-            if (showCode(code, col)) basic.pause(ms)
+            if (text.charCodeAt(i) < 128) {
+                i += 1                                   // 英数字は読み飛ばす
+            } else {
+                if (showChar(text.substr(i, u), col)) basic.pause(ms)
+                i += u
+            }
         }
     }
 
@@ -191,30 +190,45 @@ namespace kanjiLCD {
     //% ch.defl="仙"
     //% weight=70 advanced=true
     export function hasKanji(ch: string): boolean {
-        if (ch.length == 0) return false
-        let code = codeAt(ch, 0)
-        return customCodes.indexOf(code) >= 0 || findIndex(code) >= 0
+        let u = getUnit()
+        if (ch.length < u) return false
+        let c = ch.substr(0, u)
+        return customIndex(c) >= 0 || findIndex(c) >= 0
     }
 
     /**
-     * 文字を自分で追加する(tools/make_font.py --extra で出る60桁の16進文字列)。
+     * 診断用: 「文字列の長さ/収録番号/文字列の単位」を文字列で返す。表示できないときの調査に使う。
+     * @param ch 調べる文字, eg: "月"
+     */
+    //% blockId=kanjilcd_debug block="漢字LCD 診断 %ch"
+    //% ch.defl="月"
+    //% weight=65 advanced=true
+    export function debugInfo(ch: string): string {
+        let u = getUnit()
+        let c = ch.substr(0, u)
+        return "" + ch.length + "/" + findIndex(c) + "/" + u
+    }
+
+    /**
+     * 文字を自分で追加する(60桁の16進文字列)。
      * @param ch 文字1つ
      * @param hex 60桁の16進文字列
      */
     //% blockId=kanjilcd_reg block="漢字LCD 文字 %ch を登録 データ %hex"
     //% weight=60 advanced=true
     export function registerKanji(ch: string, hex: string) {
-        if (ch.length == 0 || hex.length != 60) return
-        let code = codeAt(ch, 0)
+        let u = getUnit()
+        if (ch.length < u || hex.length != 60) return
+        let c = ch.substr(0, u)
         let buf = pins.createBuffer(30)
         for (let i = 0; i < 30; i++) {
             buf.setUint8(i, hexVal(hex.charCodeAt(i * 2)) * 16 + hexVal(hex.charCodeAt(i * 2 + 1)))
         }
-        let k = customCodes.indexOf(code)
+        let k = customIndex(c)
         if (k >= 0) {
             customBufs[k] = buf
         } else {
-            customCodes.push(code)
+            customKeys.push(c)
             customBufs.push(buf)
         }
     }
