@@ -1,15 +1,15 @@
 {
     "name": "kanji-lcd1602",
     "version": "1.0.0",
-    "description": "LCD1602(I2C)にひらがな・カタカナ・漢字(JIS第一水準)を3x2マスで表示する micro:bit 用ライブラリ",
+    "description": "LCD1602(I2C)にひらがな・カタカナ(縦横比2:3)・漢字を表示する micro:bit 用ライブラリ",
     "dependencies": {
-        "core": "*",
-        "i2cLCD1602": "github:makecode-extensions/i2cLCD1602#v1.5.0"
+        "core": "*"
     },
     "files": [
         "README.md",
         "kanjilcd.ts",
-        "kanjifont.ts"
+        "kanjifont.ts",
+        "kanafont.ts"
     ],
     "testFiles": [
         "test.ts"
