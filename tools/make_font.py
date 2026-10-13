@@ -7,6 +7,8 @@
     python tools/make_font.py tools/shnmk16.bdf --compact       # micro:bit V1に収まる小さい版(約13KB)
     python tools/make_font.py tools/shnmk16.bdf --lite          # 中間の版(約20KB)
     python tools/make_font.py tools/shnmk16.bdf --extra 仙台     # 追加字を指定
+    python tools/make_font.py tools/shnmk16.bdf --compact --text tools/namboku.txt
+                                                                  # テキストファイルに出てくる字をすべて追加(重複は1つに)
 
 各文字は 15x16 ドット(3x2マス)に縮小し、1ビット/ドットで30バイトに詰める。
 """
@@ -113,6 +115,9 @@ def main():
         if level2:
             chars += list(kanji_rows(0x50, 0x74))             # 第二水準
     chars += list(extra)
+    if "--text" in args:                                      # テキスト中の文字を追加(重複は後段で除去)
+        t = open(args[args.index("--text") + 1], encoding="utf-8").read()
+        chars += [c for c in t if ord(c) >= 0x80 and not c.isspace()]
 
     glyphs = load_bdf(path)
     table = {}

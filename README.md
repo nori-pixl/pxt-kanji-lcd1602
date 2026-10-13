@@ -7,7 +7,8 @@ LCD1602(I2C)に**ひらがな・カタカナ・漢字**を表示する micro:bit
 
 - ひらがな・カタカナ・主な記号
 - 日常でよく使う漢字 約300字(年月日・曜日・数字・天気・方位・仙台宮城など)
-- 合計 403字 / データ約13KB
+- **仙台市営地下鉄南北線のアナウンス文に出る文字(142種)をすべて収録**(駅名の富沢・泉中央・勾当台公園・愛宕橋など)
+- 合計 461字 / データ約14.4KB
 
 **ほぼ全ての漢字が必要な場合(micro:bit V2 専用)** は、`full` ブランチを使います。
 JIS第一水準(約2,965字)を含む3,227字が入っています。
@@ -39,7 +40,7 @@ sudo apt install xfonts-shinonome pcf2bdf
 gunzip -c /usr/share/fonts/X11/misc/shnmk16.pcf.gz > shnmk16.pcf
 pcf2bdf shnmk16.pcf > tools/shnmk16.bdf
 
-python tools/make_font.py tools/shnmk16.bdf --compact       # V1に収まる版(約403字・約13KB)
+python tools/make_font.py tools/shnmk16.bdf --compact --text tools/namboku.txt  # V1に収まる版(南北線の字を含む461字・約14.4KB)
 python tools/make_font.py tools/shnmk16.bdf --lite          # 中間の版(約629字・約20KB)
 python tools/make_font.py tools/shnmk16.bdf --level2        # 第二水準も入れる(約200KB・V2でも厳しい)
 python tools/make_font.py tools/shnmk16.bdf --extra 仙台     # 追加したい文字
