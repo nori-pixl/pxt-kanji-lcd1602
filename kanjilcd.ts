@@ -27,12 +27,17 @@ namespace kanjiLCD {
     const FILL = 30
 
     // ---------- 低レベルI2C ----------
-    function wr(v: number) {
-        pins.i2cWriteBuffer(addr, pins.createBufferFromArray([v | backlight]))
+    // 依存している拡張 i2cLCD1602 (makecode-extensions/i2cLCD1602) と同じ手順で送る:
+    //   nibble ごとに「E=0 → E=1 → E=0」の3回書き込み、1回ごとに1ms待つ。
+    function setreg(d: number) {
+        pins.i2cWriteNumber(addr, d, NumberFormat.Int8LE)
+        basic.pause(1)
     }
     function nib(v: number, rs: number) {
-        wr((v & 0xF0) | rs | 0x04)
-        wr((v & 0xF0) | rs)
+        let d = (v & 0xF0) + backlight + rs
+        setreg(d)
+        setreg(d + 4)
+        setreg(d)
     }
     function send(v: number, rs: number) {
         nib(v, rs)
@@ -155,26 +160,18 @@ namespace kanjiLCD {
     // ---------- ブロック ----------
     /**
      * LCDを初期化する。アドレスは 0x27 か 0x3F が多い。
-     * 別のLCDライブラリで初期化済みなら、このブロックは不要。
+     * 拡張 i2cLCD1602 の初期化もここで行う。i2cLCD1602 を別に初期化済みでも、
+     * 漢字LCDが使うアドレス(初期値 39)を合わせるため、このブロックを呼ぶ。
      * @param address I2Cアドレス, eg: 39
      */
     //% blockId=kanjilcd_init block="漢字LCDを初期化 I2Cアドレス %address"
     //% address.defl=39
     //% weight=100
     export function init(address: number = 0x27) {
-        addr = address
+        addr = address == 0 ? 0x27 : address
         slotCol = [-1, -1]
-        basic.pause(50)
-        nib(0x30, 0)
-        basic.pause(5)
-        nib(0x30, 0)
-        nib(0x30, 0)
-        nib(0x20, 0)
-        send(0x28, 0) // 4bit, 2行
-        send(0x0C, 0) // 表示ON
-        send(0x06, 0) // 右へ進む
-        send(0x01, 0) // クリア
-        basic.pause(2)
+        backlight = 0x08
+        I2C_LCD1602.LcdInit(address)        // 初期化は拡張 i2cLCD1602 にまかせる
     }
 
     /**
@@ -183,8 +180,7 @@ namespace kanjiLCD {
     //% blockId=kanjilcd_clear block="漢字LCD 画面を消す"
     //% weight=95
     export function clear() {
-        send(0x01, 0)
-        basic.pause(2)
+        I2C_LCD1602.clear()
         slotCol = [-1, -1]
     }
 
@@ -196,7 +192,8 @@ namespace kanjiLCD {
     //% weight=94
     export function setBacklight(on: boolean) {
         backlight = on ? 0x08 : 0x00
-        wr(0)
+        if (on) I2C_LCD1602.BacklightOn()
+        else I2C_LCD1602.BacklightOff()
     }
 
     /**
@@ -264,10 +261,7 @@ namespace kanjiLCD {
     //% s.defl="12/31" col.min=0 col.max=15 col.defl=4 row.min=0 row.max=1
     //% weight=80
     export function showText(s: string, col: number, row: number) {
-        send((row == 0 ? 0x80 : 0xC0) | col, 0)
-        for (let i = 0; i < s.length; i++) {
-            send(s.charCodeAt(i), 1)
-        }
+        I2C_LCD1602.ShowString(s, col, row)
     }
 
     /**
