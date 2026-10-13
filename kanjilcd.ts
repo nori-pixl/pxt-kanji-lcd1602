@@ -274,4 +274,4 @@ namespace kanjiLCD {
             customBufs.push(buf)
         }
     }
-            }
+                        }
