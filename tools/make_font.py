@@ -142,11 +142,11 @@ def main():
 
     with open("kanjifont.ts", "w", encoding="utf-8") as f:
         f.write("// 自動生成: tools/make_font.py (東雲フォント 16x16 gothic / パブリックドメイン)\n")
-        f.write("// 文字数: %d  / INDEX: Unicodeコード(UInt16BE, 昇順) / 各グリフ30バイト(15x16, 1bit/dot)\n" % len(codes))
+        f.write("// 文字数: %d  / KEYS: 収録文字をコード昇順に並べた文字列(順番=グリフ番号) / 各グリフ30バイト(15x16, 1bit/dot)\n" % len(codes))
         f.write("namespace kanjiLCD {\n")
         f.write("    export const GLYPH_COUNT = %d\n" % len(codes))
         f.write("    export const BLOCK_SIZE = %d\n" % BLOCK)
-        f.write("    export const INDEX = hex`%s`\n" % index.hex())
+        f.write('    export const KEYS = "%s"\n' % "".join(chr(c) for c in codes))
         f.write("    export const BLOCKS: Buffer[] = [\n")
         for b in blocks:
             f.write("        hex`%s`,\n" % b.hex())
