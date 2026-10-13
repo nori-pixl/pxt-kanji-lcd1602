@@ -9,7 +9,7 @@
  * 3種類以上の字を表示するとき、このライブラリは自動で「2種類ずつのページ」に分けて
  * 一定時間ごとに切り替えて表示する(何文字でも表示できる)。
  *
- * 文字の探し方: 収録文字を並べた文字列 KEYS / KANA_KEYS から indexOf で探す。
+ * 文字の探し方: 文字コード(Unicode)の数値を、コード表(KANJI_CODES / KANA_CODES)から二分探索する。
  */
 
 //% weight=90 color=#2E86AB icon="\uf2bb" block="漢字LCD"
@@ -49,10 +49,9 @@ namespace kanjiLCD {
     }
 
     // ---------- 文字の探索 ----------
-    // 全角1文字が文字列の何単位ぶんか。UTF-16単位なら1、UTF-8バイト単位なら3。
-    // (KANA_KEYS は3バイト文字だけでできているので、長さで判定できる)
+    // 文字列の中身が「UTF-8のバイト」(全角1文字=3)か「UTF-16」(全角1文字=1)かを、リテラルの長さで判定する。
     function getUnit(): number {
-        if (unit == 0) unit = KANA_KEYS.length > KANA_COUNT ? 3 : 1
+        if (unit == 0) unit = "あ".length > 1 ? 3 : 1
         return unit
     }
 
@@ -67,19 +66,45 @@ namespace kanjiLCD {
         return -1
     }
 
-    function indexIn(keys: string, c: string): number {
-        if (c.length == 0) return -1
-        let p = keys.indexOf(c)
-        if (p < 0) return -1
-        return getUnit() == 3 ? Math.idiv(p, 3) : p
+    // 全角1文字(c)の文字コード(Unicode)。取れなければ -1
+    function codeOf(c: string): number {
+        if (getUnit() == 3) {
+            if (c.length < 3) return -1
+            return ((c.charCodeAt(0) & 0x0F) << 12) | ((c.charCodeAt(1) & 0x3F) << 6) | (c.charCodeAt(2) & 0x3F)
+        }
+        if (c.length < 1) return -1
+        return c.charCodeAt(0)
+    }
+
+    // 2バイトずつ昇順に並んだコード表 codes(count個)から code を二分探索。番号 or -1
+    function searchCode(codes: Buffer, count: number, code: number): number {
+        let lo = 0
+        let hi = count - 1
+        while (lo <= hi) {
+            let mid = (lo + hi) >> 1
+            let v = (codes.getUint8(mid * 2) << 8) | codes.getUint8(mid * 2 + 1)
+            if (v == code) return mid
+            if (v < code) lo = mid + 1
+            else hi = mid - 1
+        }
+        return -1
+    }
+
+    // 漢字は 0x4E00〜0x9FFF だけ漢字表(KEYS)、それ以外はかな表(KANA_KEYS)を引く。表をまたいで探さない。
+    function isKanjiCode(code: number): boolean {
+        return code >= 0x4E00 && code <= 0x9FFF
     }
 
     function findIndex(c: string): number {
-        return indexIn(KEYS, c)
+        let code = codeOf(c)
+        if (!isKanjiCode(code)) return -1
+        return searchCode(KANJI_CODES, GLYPH_COUNT, code)
     }
 
     function findKana(c: string): number {
-        return indexIn(KANA_KEYS, c)
+        let code = codeOf(c)
+        if (code < 0 || isKanjiCode(code)) return -1
+        return searchCode(KANA_CODES, KANA_COUNT, code)
     }
 
     function hasGlyph(c: string): boolean {
@@ -422,7 +447,7 @@ namespace kanjiLCD {
     }
 
     /**
-     * 診断用: 「文字列の長さ/漢字の収録番号/かなの収録番号/文字列の単位」を文字列で返す。表示できないときの調査に使う。
+     * 診断用: 「文字列の長さ/文字コード/漢字の収録番号/かなの収録番号/文字列の単位」を文字列で返す。表示できないときの調査に使う。
      * @param ch 調べる文字, eg: "あ"
      */
     //% blockId=kanjilcd_debug block="漢字LCD 診断 %ch"
@@ -431,7 +456,7 @@ namespace kanjiLCD {
     export function debugInfo(ch: string): string {
         let u = getUnit()
         let c = ch.substr(0, u)
-        return "" + ch.length + "/" + findIndex(c) + "/" + findKana(c) + "/" + u
+        return "" + ch.length + "/" + codeOf(c) + "/" + findIndex(c) + "/" + findKana(c) + "/" + u
     }
 
     /**
@@ -457,4 +482,4 @@ namespace kanjiLCD {
             customBufs.push(buf)
         }
     }
-            }
+        }
