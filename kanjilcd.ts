@@ -300,6 +300,9 @@ namespace kanjiLCD {
         send(0x06, 0) // 右へ進む
         send(0x01, 0) // クリア
         basic.pause(2)
+        // 全角文字が正しく届いていない(pxt.json の utf8:true が効いていない/古い版が残っている)ときは、
+        // 2行目に警告を出す。出たら、拡張機能を削除して、入れ直す。
+        if (!utf8Ok()) showText("UTF8 OFF", 0, 1)
     }
 
     /**
@@ -502,6 +505,16 @@ namespace kanjiLCD {
     //% weight=70 advanced=true
     export function hasKanji(ch: string): boolean {
         return hasGlyph(firstCode(ch))
+    }
+
+    /**
+     * 全角文字が、正しく(文字化けせずに)届いているか。false のときは、拡張機能を削除して入れ直してください。
+     * (pxt.json の utf8:true が効いていないと、全角文字が下位1バイトに削られて false になる)
+     */
+    //% blockId=kanjilcd_utf8 block="漢字LCD UTF-8が有効"
+    //% weight=66 advanced=true
+    export function utf8Ok(): boolean {
+        return "仙".length == 1 && "仙".charCodeAt(0) == 20185
     }
 
     /**
