@@ -1,63 +1,64 @@
 # kanji-lcd1602
 
 LCD1602(I2C)に**ひらがな・カタカナ・漢字**を表示する micro:bit(MakeCode)用ライブラリです。
-東雲フォント16x16を 3マス x 2段(15x16ドット)に縮小し、CGRAM 0〜5 に登録して表示します。
+東雲フォント(パブリックドメイン)の字を、**縦2マス x 横3マス(15x16ドット)**の、線が1ドット幅の細い字で表示します。
+横に縮めたり伸ばしたりしないので、線が太くなりません。
 
-## 収録文字(この main ブランチ = micro:bit V1 でも動く小さい版)
-
-- ひらがな・カタカナ・主な記号
-- 日常でよく使う漢字 約300字(年月日・曜日・数字・天気・方位・仙台宮城など)
-- **仙台市営地下鉄南北線のアナウンス文に出る文字(142種)をすべて収録**(駅名の富沢・泉中央・勾当台公園・愛宕橋など)
-- 合計 461字 / データ約14.4KB
-
-**ほぼ全ての漢字が必要な場合(micro:bit V2 専用)** は、`full` ブランチを使います。
-JIS第一水準(約2,965字)を含む3,227字が入っています。
-
-`https://github.com/nori-pixl/pxt-kanji-lcd1602#full`
-
-## 依存ライブラリ
-
-LCDの初期化・画面消去・バックライト・英数字の表示は、拡張 **i2cLCD1602**
-(`github:makecode-extensions/i2cLCD1602`)にまかせています。この拡張を追加すると、自動で一緒に入ります。
-すでに `I2C_LCD1602` を使っているプロジェクトなら、そのまま共存できます。
-
-- 「漢字LCDを初期化」を呼ぶと、i2cLCD1602 の初期化も行います(アドレスは 39 か 63)。
-- 英数字は、これまでどおり i2cLCD1602 の `ShowString` でも、「漢字LCD 英数字 ○ を…」でも出せます。
-- 漢字のCGRAM書き込みも、i2cLCD1602 と同じ通信手順(1回ごとに1ms待つ)で行います。
-  そのぶん、1文字の表示に約0.25〜0.4秒かかります。
-
-## 使い方
-
-MakeCode で「拡張機能」から、このリポジトリのURLを貼って追加します。
+LCD1602 の自作文字(CGRAM)は8個で、1文字に6個使うので、**一瞬に出せる字の種類は1つ**です。
+そこで、字の種類が2つ以上のときは、背景で**種類を高速に順に切り替え続けます**。
+液晶は反応が遅いので、何文字でも「同時に点いている」ように見えます(文字が多いほど少し暗く、ちらつきます)。
+同じ字だけなら、切り替えは起きず、ちらつきません。
 
 ```typescript
-kanjiLCD.init(0x27)                        // アドレスは 0x27 か 0x3F
-kanjiLCD.showKanji("仙", 0)                // 左端3マスに「仙」
-kanjiLCD.showText("12/31", 4, 0)           // 英数字は通常の文字で
-kanjiLCD.showSequence("仙台のひらがな", 0, 800) // 1文字ずつ切り替え
+kanjiLCD.showKanji("あ", 0)    // この3つを並べると、あいう が同時に点いて見える
+kanjiLCD.showKanji("い", 3)
+kanjiLCD.showKanji("う", 6)
 ```
+
+切り替えの間の待ちは `kanjiLCD.setPageTime(ms)`(詳細設定のブロック)で変えられます。0(初期値)がいちばん速く、大きくすると1文字ずつゆっくり順に出ます。
+
+## 収録文字(`kanjifont.ts` の1ファイルに全部入っています)
+
+- ひらがな・カタカナ・記号・全角英数・漢字: 1,297字(漢字は1,035字)
+
+## 【重要】漢字は「文字コード」で指定します
+
+micro:bit の実機(確認: V2)では、MakeCode が作るプログラムに全角文字が**下位1バイトしか**届きません。
+たとえば「仙」(0x4ED9)と「ベ」(0x30D9)は、実機のプログラムの中では同じ文字になります
+(シミュレーターでは正しく動くので、気づきにくい不具合です)。
+
+| 文字の種類 | 指定のしかた |
+| --- | --- |
+| ひらがな・カタカナ・記号 | 文字列のままでOK(下位バイトから復元します) |
+| 漢字 | 文字コード(数値)で指定する |
+
+```typescript
+kanjiLCD.init(0x27)                                              // アドレスは 0x27 か 0x3F
+kanjiLCD.showCodes([20185, 21488, 12398, 26085, 26332], 0, 3)   // 仙台の日曜(全部が同時に点いて見える)
+kanjiLCD.showCode(26085, 0)                                      // 1文字だけ(日)
+kanjiLCD.showCodeText("20185 21488 12398", 0, 3)                 // 数字の文字列(ブロック用)
+kanjiLCD.showString("あいう", 0, 3)                              // ひらがな・カタカナは文字列でOK
+kanjiLCD.showText("10/13", 11, 1)                                // 英数字
+```
+
+文字コードは、文字を入れると作ってくれる変換ページが便利です。
+https://claude.ai/artifact/LNsED2TSJU8g2FppmqZHgC
+
+どちらの環境か調べるには、`漢字LCD 診断 "あ"` の最後の数字を見ます(0=正常、1=下位1バイトのみ)。
+LCD に出すには `I2C_LCD1602.ShowString(kanjiLCD.debugInfo("あ"), 0, 0)` が使えます。
 
 ## 制約
 
-- 同時に表示できる全角文字は**1文字**(CGRAM 8個のうち6個を使用)。CGRAM 6,7 は自由に使えます。
-- `full` ブランチはデータが約101KBあり、V1のフラッシュには収まりません。`pxt.json` で V1 ビルドを無効にしてあるので、**V2専用**です。
+- 字の種類が増えるほど、1文字が点いている時間が短くなって、暗く・ちらつきます(目安: 3種類で約0.08秒に一周、I2C 100kHz のとき)。
+- 文字を表示するたびに、LCD の自作文字(CGRAM)を書き換えます。
 
-## 小さい版・第二水準・追加
-
-`tools/make_font.py` で `kanjifont.ts` を作り直せます。
+## データの検査・作り直し
 
 ```bash
-sudo apt install xfonts-shinonome pcf2bdf
-gunzip -c /usr/share/fonts/X11/misc/shnmk16.pcf.gz > shnmk16.pcf
-pcf2bdf shnmk16.pcf > tools/shnmk16.bdf
-
-python tools/make_font.py tools/shnmk16.bdf --compact --text tools/namboku.txt  # V1に収まる版(南北線の字を含む461字・約14.4KB)
-python tools/make_font.py tools/shnmk16.bdf --lite          # 中間の版(約629字・約20KB)
-python tools/make_font.py tools/shnmk16.bdf --level2        # 第二水準も入れる(約200KB・V2でも厳しい)
-python tools/make_font.py tools/shnmk16.bdf --extra 仙台     # 追加したい文字
+python tools/check_font.py kanjifont.ts                 # コード表・ブロック長・字形の重複を検査
+python tools/reblock.py kanjifont.ts 32                 # hexリテラルのブロックの大きさを変える
+python tools/make_font_3x2.py 漢字15x16.ts 最初のコミットのkanjifont.ts kanafont.ts   # 細い15x16で1ファイルに作り直す
 ```
-
-`registerKanji` で、プログラム内から1文字だけ追加することもできます(60桁の16進)。
 
 ## ライセンス
 

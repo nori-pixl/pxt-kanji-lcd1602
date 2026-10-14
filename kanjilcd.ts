@@ -1,17 +1,15 @@
 /**
  * LCD1602(I2C, PCF8574バックパック)に漢字・ひらがな・カタカナを表示するライブラリ。
  *
- * すべての字(ひらがな・カタカナ・記号・漢字)は 縦横比2:3 = 10x15ドット(縦2マス x 横2マス)のデータ。
- * 1文字の幅: setWidth(2) = 縦2 x 横2マス ← 初期値。データそのままの2:3で、同時に2種類まで表示できる。
- *            setWidth(3) = 縦2 x 横3マス。横に1.5倍に伸ばして表示する(同時に1種類)。
+ * すべての字(ひらがな・カタカナ・記号・全角英数・漢字)は 縦2マス x 横3マス(15x16ドット)の、
+ * 東雲フォントそのままの細い字(線は1ドット幅)。横に縮めたり伸ばしたりしないので、線が太くならない。
  *
- * LCD1602 が自由に使える文字パターン(CGRAM)は8マスだけなので、全角文字は
- * 幅2なら1種類につき4マス使うので【同時に表示できる字の種類は2つ】、幅3なら6マスで【1つ】まで
- * (同じ字なら何か所でも可)。
- * 種類が上限を超えるとき、このライブラリは自動で「上限ずつのページ」に分けて
- * 一定時間ごとに切り替えて表示する(何文字でも表示できる)。
+ * LCD1602 が自由に使える文字パターン(CGRAM)は8マスだけで、1文字に6マス使うので、
+ * 一瞬に持てる字の種類は1つ。字の種類が2つ以上のときは、背景で種類を順に【高速に】切り替え続ける。
+ * 液晶は反応が遅いので、何文字でも「同時に点いている」ように見える(文字数が多いほど少し暗く、ちらつく)。
+ * 切り替えの間の待ちは setPageTime(ミリ秒)で変えられる(0 = いちばん速い。大きくすると1文字ずつゆっくり)。
  *
- * 文字の探し方: 文字コード(Unicode)の数値を、コード表(KANJI_CODES / KANA_CODES)から二分探索する。
+ * 文字の探し方: 文字コード(Unicode)の数値を、コード表(KANJI_CODES)から二分探索する。
  *
  * 【重要】MakeCode の実機(古い micro:bit 環境)では、文字列に入れた全角文字は下位1バイトしか
  * プログラムに届かないことがある(「仙」0x4ED9 と「ベ」0x30D9 が同じ 0xD9 になる)。
@@ -38,14 +36,15 @@ namespace kanjiLCD {
     let cols: number[] = []
     // いま画面に描いている桁(消すときに使う)
     let shown: number[] = []
-    // ページ切り替え
+    // 字の切り替え
     let pageIdx = 0
-    let pageMs = 1500
+    let pageMs = 0       // 字を切り替える間の待ち(ミリ秒)。0 = できるだけ速く(全部の字が同時に点いて見える)
+    let wantLock = 0
+    let q: number[] = []   // まとめて送るI2Cのバイト列
     let pageRunning = false
-    // 1文字の幅(マス数): 2 または 3
-    let cells = 2
+    const cells = 3   // 1文字の横のマス数(縦は2マス)
 
-    const GLYPH_BYTES = 19   // 1グリフ 10x15ドット = 19バイト(漢字もかなも同じ)
+    const GLYPH_BYTES = 30   // 1グリフ 15x16ドット = 30バイト
 
     // ---------- 低レベルI2C ----------
     function wr(v: number) {
@@ -60,10 +59,32 @@ namespace kanjiLCD {
         nib(v << 4, rs)
     }
 
-    // ---------- 排他(ページ切り替えの背景処理と、メイン側の表示がぶつからないように) ----------
+    // 速く切り替えるために、LCDへの命令・データをまとめて(最大60バイトずつ)1回のI2Cで送る
+    function qnib(v: number, rs: number) {
+        q.push((v & 0xF0) | rs | 0x04 | backlight)
+        q.push((v & 0xF0) | rs | backlight)
+    }
+    function qsend(v: number, rs: number) {
+        qnib(v, rs)
+        qnib(v << 4, rs)
+    }
+    function flush() {
+        let i = 0
+        while (i < q.length) {
+            let n = q.length - i
+            if (n > 60) n = 60
+            pins.i2cWriteBuffer(addr, pins.createBufferFromArray(q.slice(i, i + n)))
+            i += n
+        }
+        q = []
+    }
+
+    // ---------- 排他(背景の切り替えと、メイン側の表示がぶつからないように) ----------
     function lock() {
-        while (busy) basic.pause(2)
+        wantLock++
+        while (busy) basic.pause(1)
         busy = true
+        wantLock--
     }
     function unlock() {
         busy = false
@@ -127,166 +148,124 @@ namespace kanjiLCD {
         return -1
     }
 
-    // 漢字は 0x4E00〜0x9FFF だけ漢字表(KEYS)、それ以外はかな表(KANA_KEYS)を引く。表をまたいで探さない。
-    function isKanjiCode(code: number): boolean {
-        return code >= 0x4E00 && code <= 0x9FFF
-    }
-
+    // 収録文字(ひらがな・カタカナ・記号・漢字すべて)は1つの表 KANJI_CODES に入っている。
     function findIndex(code: number): number {
-        if (!isKanjiCode(code)) return -1
+        if (code < 0) return -1
         return searchCode(KANJI_CODES, GLYPH_COUNT, code)
     }
 
-    function findKana(code: number): number {
-        if (code < 0 || isKanjiCode(code)) return -1
-        return searchCode(KANA_CODES, KANA_COUNT, code)
-    }
-
     function hasGlyph(code: number): boolean {
-        return code >= 0 && (customIndex(code) >= 0 || findKana(code) >= 0 || findIndex(code) >= 0)
+        return code >= 0 && (customIndex(code) >= 0 || findIndex(code) >= 0)
     }
 
     // ---------- グリフをCGRAMへ ----------
-    // 10x15ドットのグリフ(base から19バイト)の bitpos 番目のドット
+    // 15x16ドットのグリフ(base から30バイト)の bitpos 番目のドット
     function getBit(buf: Buffer, base: number, bitpos: number): number {
         let byte = base + (bitpos >> 3)
         return (buf.getUint8(byte) >> (7 - (bitpos & 7))) & 1
     }
 
-    // 同時に持てる字の種類(CGRAMは8個): 幅2=4個/字 → 2種類、幅3=6個/字 → 1種類
-    function kindsPerPage(): number {
-        return Math.idiv(8, cells * 2)
-    }
-
-    // 漢字もかなも: 10x15のデータを、幅 cells マスで書き込む(幅2はそのまま、幅3は横に1.5倍に伸ばす)。16行目は空行。
-    function writeData(buf: Buffer, base: number, slot: number) {
-        let dw = cells * 5
+    // 15x16のデータを、縦2マス x 横3マスの CGRAM 6個に、そのまま書き込む(縮めも伸ばしもしない)
+    function writeData(buf: Buffer, base: number) {
         let per = cells * 2
         for (let c = 0; c < per; c++) {
-            let cx = c % cells
-            let ry = c < cells ? 0 : 1
-            send(0x40 | ((slot * per + c) << 3), 0)
+            let cx = c % cells          // 左→右のマス
+            let ry = c < cells ? 0 : 1  // 上段/下段
+            qsend(0x40 | (c << 3), 0)   // CGRAM の書き込み位置
             for (let y = 0; y < 8; y++) {
                 let row = ry * 8 + y
                 let v = 0
-                if (row < 15) {
-                    for (let k = 0; k < 5; k++) {
-                        let sj = Math.idiv((cx * 5 + k) * 10, dw)
-                        v |= getBit(buf, base, row * 10 + sj) << (4 - k)
-                    }
+                for (let k = 0; k < 5; k++) {
+                    v |= getBit(buf, base, row * 15 + cx * 5 + k) << (4 - k)
                 }
-                send(v, 1)
+                qsend(v, 1)
             }
         }
     }
 
-    // 文字 g をスロット slot に書く。見つからなければ false
-    function writeGlyph(g: number, slot: number): boolean {
+    // 文字 g をCGRAMに書く(送信待ちに積む)。見つからなければ false
+    function writeGlyph(g: number): boolean {
         let k = customIndex(g)
         if (k >= 0) {
-            writeData(customBufs[k], 0, slot)
-            return true
-        }
-        let n = findKana(g)
-        if (n >= 0) {
-            writeData(KANA_BLOCKS[Math.idiv(n, KANA_BLOCK_SIZE)], (n % KANA_BLOCK_SIZE) * GLYPH_BYTES, slot)
+            writeData(customBufs[k], 0)
             return true
         }
         let idx = findIndex(g)
         if (idx >= 0) {
-            writeData(BLOCKS[Math.idiv(idx, BLOCK_SIZE)], (idx % BLOCK_SIZE) * GLYPH_BYTES, slot)
+            writeData(BLOCKS[Math.idiv(idx, BLOCK_SIZE)], (idx % BLOCK_SIZE) * GLYPH_BYTES)
             return true
         }
         return false
     }
 
-    // ---------- 配置とページ ----------
-    // items を「字の種類が上限まで(幅3=1つ、幅2=2つ)」のページに分ける(最初に入る所に入れる)。各ページは items の番号の配列。
-    function buildPages(): number[][] {
-        let pages: number[][] = []
-        let kinds: number[][] = []
+    // ---------- 配置と、字の切り替え(時分割) ----------
+    // LCD1602 の自作文字は8個しかなく、1文字に6個使うので、同時に持てる字の種類は1つ。
+    // 字の種類が2つ以上のときは、背景で種類を順に高速に切り替える(液晶は反応が遅いので、全部が同時に点いて見える)。
+
+    // items に含まれる字の種類(重複なし、出てきた順)
+    function distinctKinds(): number[] {
+        let ks: number[] = []
         for (let i = 0; i < items.length; i++) {
-            let done = false
-            for (let p = 0; p < pages.length; p++) {
-                if (kinds[p].indexOf(items[i]) >= 0 || kinds[p].length < kindsPerPage()) {
-                    if (kinds[p].indexOf(items[i]) < 0) kinds[p].push(items[i])
-                    pages[p].push(i)
-                    done = true
-                    break
-                }
-            }
-            if (!done) {
-                pages.push([i])
-                kinds.push([items[i]])
-            }
+            if (ks.indexOf(items[i]) < 0) ks.push(items[i])
         }
-        return pages
+        return ks
     }
 
-    function blankAt(col: number) {
-        send(0x80 | col, 0)
-        for (let i = 0; i < cells; i++) send(0x20, 1)
-        send(0xC0 | col, 0)
-        for (let i = 0; i < cells; i++) send(0x20, 1)
+    function qblankAt(col: number) {
+        qsend(0x80 | col, 0)
+        for (let i = 0; i < cells; i++) qsend(0x20, 1)
+        qsend(0xC0 | col, 0)
+        for (let i = 0; i < cells; i++) qsend(0x20, 1)
     }
 
-    // 1ページぶんを描く: いま描いてある字を消し → CGRAMを書き → 各桁に置く
-    function drawPage(page: number[]) {
-        for (let i = 0; i < shown.length; i++) blankAt(shown[i])
+    // 字 g の番を描く: いま出している字(別の種類)を消し → CGRAMにgを書き → g のある桁に置く
+    function drawKind(g: number) {
+        for (let i = 0; i < shown.length; i++) qblankAt(shown[i])
         shown = []
-        let kinds: number[] = []
-        for (let n = 0; n < page.length; n++) {
-            let g = items[page[n]]
-            if (kinds.indexOf(g) < 0) {
-                writeGlyph(g, kinds.length)
-                kinds.push(g)
-            }
-        }
-        for (let n = 0; n < page.length; n++) {
-            let col = cols[page[n]]
-            let b = kinds.indexOf(items[page[n]]) * cells * 2
-            send(0x80 | col, 0)
-            for (let i = 0; i < cells; i++) send(b + i, 1)             // 上段
-            send(0xC0 | col, 0)
-            for (let i = 0; i < cells; i++) send(b + cells + i, 1)     // 下段
+        writeGlyph(g)
+        for (let n = 0; n < items.length; n++) {
+            if (items[n] != g) continue
+            let col = cols[n]
+            qsend(0x80 | col, 0)
+            for (let i = 0; i < cells; i++) qsend(i, 1)                 // 上段
+            qsend(0xC0 | col, 0)
+            for (let i = 0; i < cells; i++) qsend(cells + i, 1)         // 下段
             shown.push(col)
         }
+        flush()
     }
 
-    // 2ページ以上あるとき、一定時間ごとにページを切り替える
+    // 種類が2つ以上あるあいだ、背景で順に切り替え続ける
     function startPaging() {
         if (pageRunning) return
         pageRunning = true
         control.inBackground(function () {
             while (true) {
-                basic.pause(pageMs)
+                while (wantLock > 0) basic.pause(2)   // メイン側が表示を変えたがっているときは先に譲る
                 lock()
-                let pages = buildPages()
-                if (pages.length < 2) {
+                let ks = distinctKinds()
+                if (ks.length < 2) {
+                    if (ks.length == 1) drawKind(ks[0])
                     pageRunning = false
                     unlock()
                     return
                 }
-                pageIdx = (pageIdx + 1) % pages.length
-                drawPage(pages[pageIdx])
+                pageIdx = (pageIdx + 1) % ks.length
+                drawKind(ks[pageIdx])
                 unlock()
+                basic.pause(pageMs < 1 ? 1 : pageMs)
             }
         })
     }
 
-    // 配置を変えたあとに画面へ反映する。showLast=true なら最後に置いた字があるページを、falseなら先頭ページを出す。
+    // 配置を変えたあとに画面へ反映する。showLast=true なら最後に置いた字から、falseなら先頭の字から出す。
     function refresh(showLast: boolean) {
-        let pages = buildPages()
-        if (pages.length == 0) return
+        let ks = distinctKinds()
+        if (ks.length == 0) return
         pageIdx = 0
-        if (showLast) {
-            let last = items.length - 1
-            for (let p = 0; p < pages.length; p++) {
-                if (pages[p].indexOf(last) >= 0) pageIdx = p
-            }
-        }
-        drawPage(pages[pageIdx])
-        if (pages.length > 1) startPaging()
+        if (showLast) pageIdx = ks.indexOf(items[items.length - 1])
+        drawKind(ks[pageIdx])
+        if (ks.length > 1) startPaging()
     }
 
     // 文字を配置に追加(桁が重なる古い字は取り除く)。描画はしない。
@@ -363,27 +342,9 @@ namespace kanjiLCD {
     }
 
     /**
-     * 1文字の幅(マス数)を決める。2 = 縦2マス x 横2マス(初期値。縦横比2:3そのまま。同時に2種類まで)。
-     * 3 = 縦2マス x 横3マス(横に伸ばす。同時に1種類で、続けて表示するとページ切り替え)。最初に1回だけ呼ぶ。
-     * @param w 2 または 3, eg: 2
-     */
-    //% blockId=kanjilcd_width block="漢字LCD 1文字の幅 %w マス"
-    //% w.min=2 w.max=3 w.defl=2
-    //% weight=93
-    export function setWidth(w: number) {
-        lock()
-        cells = w >= 3 ? 3 : 2
-        items = []
-        cols = []
-        shown = []
-        pageIdx = 0
-        unlock()
-    }
-
-    /**
-     * 漢字・ひらがな・カタカナを1文字表示する(縦2マス x 横は幅の設定どおり。初期値は2マス = 縦横比2:3)。
-     * 続けて何文字置いてもよい。字の種類が3つ以上になると、2種類ずつ自動でページ切り替えして表示する。
-     * 桁は幅の分だけ離して指定する(幅2なら 0, 2, 4、幅3なら 0, 3, 6)。
+     * 漢字・ひらがな・カタカナを1文字表示する(縦2マス x 横3マス)。
+     * 続けて何文字置いてもよい。字の種類が2つ以上になると、背景で高速に切り替えて、全部が同時に点いて見えるようにする。
+     * 桁は3つ以上離して指定する(例: 0, 3, 6)。
      * @param ch 表示する文字(1文字), eg: "あ"
      * @param col 左端の桁(0〜14), eg: 0
      */
@@ -400,15 +361,15 @@ namespace kanjiLCD {
 
     /**
      * 文字列を左から順に並べて表示する。何文字でもよい。
-     * 字の種類が3つ以上になると、2種類ずつ自動でページ切り替えして表示する。
+     * 字の種類が2つ以上になると、背景で高速に切り替えて、全部が同時に点いて見えるようにする。
      * @param text 文字列, eg: "あいうえお"
      * @param col 最初の文字の左端の桁, eg: 0
-     * @param step 1文字ごとの桁の間隔(幅以上。足りなければ幅に直す), eg: 2
+     * @param step 1文字ごとの桁の間隔(3以上。足りなければ3に直す), eg: 3
      */
     //% blockId=kanjilcd_string block="漢字LCD 文字列 %text を 桁 %col から %step 桁おきに表示"
-    //% text.defl="あいうえお" col.min=0 col.max=14 col.defl=0 step.min=2 step.max=8 step.defl=2
+    //% text.defl="あいうえお" col.min=0 col.max=14 col.defl=0 step.min=2 step.max=8 step.defl=3
     //% weight=87
-    export function showString(text: string, col: number, step: number = 2) {
+    export function showString(text: string, col: number, step: number = 3) {
         if (step < cells) step = cells
         let c = col
         let i = 0
@@ -445,9 +406,9 @@ namespace kanjiLCD {
 
     /**
      * 文字コードの並びを左から順に表示する(JavaScript用)。
-     * 例: kanjiLCD.showCodes([26085, 26332], 0, 2)  // 日曜
+     * 例: kanjiLCD.showCodes([26085, 26332], 0, 3)  // 日曜
      */
-    export function showCodes(codes: number[], col: number, step: number = 2) {
+    export function showCodes(codes: number[], col: number, step: number = 3) {
         if (step < cells) step = cells
         let c = col
         let any = false
@@ -494,25 +455,26 @@ namespace kanjiLCD {
      * 文字コードを半角の数字で並べた文字列から、左から順に表示する。ブロック用。
      * 例: "20185 21488 12398 26085 26332" (仙台の日曜)。区切りは空白かカンマ。0x3042 のような16進も使える。
      * 数字だけの文字列なので、実機でも文字化けしない。文字コードは変換ページで作れる。
-     * 字の種類が3つ以上になると、2種類ずつ自動でページ切り替えして表示する。
+     * 字の種類が2つ以上になると、背景で高速に切り替えて、全部が同時に点いて見えるようにする。
      * @param codes 文字コードの並び, eg: "20185 21488 12398 26085 26332"
      * @param col 最初の文字の左端の桁, eg: 0
-     * @param step 1文字ごとの桁の間隔(幅以上。足りなければ幅に直す), eg: 2
+     * @param step 1文字ごとの桁の間隔(3以上。足りなければ3に直す), eg: 3
      */
     //% blockId=kanjilcd_codetext block="漢字LCD 文字コード列 %codes を 桁 %col から %step 桁おきに表示"
-    //% codes.defl="20185 21488 12398 26085 26332" col.min=0 col.max=14 col.defl=0 step.min=2 step.max=8 step.defl=2
+    //% codes.defl="20185 21488 12398 26085 26332" col.min=0 col.max=14 col.defl=0 step.min=2 step.max=8 step.defl=3
     //% weight=88
-    export function showCodeText(codes: string, col: number, step: number = 2) {
+    export function showCodeText(codes: string, col: number, step: number = 3) {
         showCodes(parseCodes(codes), col, step)
     }
 
     /**
-     * ページ切り替えの間隔(ミリ秒)を決める。
-     * @param ms 間隔, eg: 1500
+     * 字の種類が2つ以上のとき、字を切り替える間の待ち(ミリ秒)。0 = いちばん速く切り替える(全部が同時に点いて見える)。
+     * 大きくすると、1文字ずつゆっくり順に表示される。
+     * @param ms 待ち, eg: 0
      */
-    //% blockId=kanjilcd_pagems block="漢字LCD ページ切り替え %ms ms"
-    //% ms.defl=1500 ms.min=300 ms.max=10000
-    //% weight=86
+    //% blockId=kanjilcd_pagems block="漢字LCD 切り替えの間隔 %ms ms"
+    //% ms.defl=0 ms.min=0 ms.max=10000
+    //% weight=40 advanced=true
     export function setPageTime(ms: number) {
         pageMs = ms
     }
@@ -570,7 +532,7 @@ namespace kanjiLCD {
     }
 
     /**
-     * 診断用: 「文字数/文字コード/漢字の収録番号/かなの収録番号/環境」を文字列で返す。環境は 0=文字コードが正常に取れる、1=下位1バイトしか取れない。表示できないときの調査に使う。
+     * 診断用: 「文字数/文字コード/収録番号/環境」を文字列で返す。環境は 0=文字コードが正常に取れる、1=下位1バイトしか取れない。表示できないときの調査に使う。
      * @param ch 調べる文字, eg: "あ"
      */
     //% blockId=kanjilcd_debug block="漢字LCD 診断 %ch"
@@ -578,21 +540,21 @@ namespace kanjiLCD {
     //% weight=65 advanced=true
     export function debugInfo(ch: string): string {
         let g = firstCode(ch)
-        return "" + ch.length + "/" + g + "/" + findIndex(g) + "/" + findKana(g) + "/" + (isLossy() ? 1 : 0)
+        return "" + ch.length + "/" + g + "/" + findIndex(g) + "/" + (isLossy() ? 1 : 0)
     }
 
     /**
-     * 文字を自分で追加する(10x15ドットを詰めた19バイト = 38桁の16進文字列)。
+     * 文字を自分で追加する(15x16ドットを詰めた30バイト = 60桁の16進文字列)。
      * @param ch 文字1つ
-     * @param hex 38桁の16進文字列
+     * @param hex 60桁の16進文字列
      */
     //% blockId=kanjilcd_reg block="漢字LCD 文字 %ch を登録 データ %hex"
     //% weight=60 advanced=true
     export function registerKanji(ch: string, hex: string) {
         let g = firstCode(ch)
-        if (g < 0 || hex.length != 38) return
-        let buf = pins.createBuffer(19)
-        for (let i = 0; i < 19; i++) {
+        if (g < 0 || hex.length != 60) return
+        let buf = pins.createBuffer(30)
+        for (let i = 0; i < 30; i++) {
             buf.setUint8(i, hexVal(hex.charCodeAt(i * 2)) * 16 + hexVal(hex.charCodeAt(i * 2 + 1)))
         }
         let k = customIndex(g)
@@ -603,4 +565,4 @@ namespace kanjiLCD {
             customBufs.push(buf)
         }
     }
-        }
+}

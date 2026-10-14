@@ -1,6 +1,10 @@
-// 漢字LCD(内部で i2cLCD1602 を使う)
-kanjiLCD.init(0x27)                       // i2cLCD1602 の初期化も行う。アドレスは 39(0x27) か 63(0x3F)
-kanjiLCD.setWidth(2)                      // 幅2マス = 同時に2文字
-kanjiLCD.showKanji("日", 0)
-kanjiLCD.showKanji("曜", 2)
-kanjiLCD.showText("10/13", 5, 0)          // 英数字
+// 漢字LCD の動作確認(i2cLCD1602 を使っているプロジェクトならそのまま共存できます)
+kanjiLCD.init(0x27)                                              // アドレスは 39(0x27) か 63(0x3F)
+// 1文字は 縦2マス x 横3マス(15x16ドット、線は1ドット幅の細い字)。
+// 字の種類が2つ以上のときは、背景で高速に切り替えて、全部が同時に点いて見えるようにします。
+kanjiLCD.showKanji("あ", 0)
+kanjiLCD.showKanji("い", 3)
+kanjiLCD.showKanji("う", 6)
+// 実機では全角の漢字が文字列から判別できないので、漢字は「文字コード」で指定します:
+// kanjiLCD.showCodes([20185, 21488, 12398, 26085, 26332], 0, 3)   // 仙台の日曜
+kanjiLCD.showText("10/13", 11, 1)                                // 英数字
