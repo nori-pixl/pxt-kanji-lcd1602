@@ -30,31 +30,28 @@ kanjiLCD.showSequence("あいう", 0, 800)     // あ → い → う と1文字
 
 - ひらがな・カタカナ・記号・全角英数・漢字: 1,297字(漢字は1,035字)
 
-## 【重要】漢字は「文字コード」で指定します
+## 漢字・ひらがな・カタカナは、文字のまま指定できます
 
-micro:bit の実機(確認: V2)では、MakeCode が作るプログラムに全角文字が**下位1バイトしか**届きません。
-たとえば「仙」(0x4ED9)と「ベ」(0x30D9)は、実機のプログラムの中では同じ文字になります
-(シミュレーターでは正しく動くので、気づきにくい不具合です)。
-
-| 文字の種類 | 指定のしかた |
-| --- | --- |
-| ひらがな・カタカナ・記号 | 文字列のままでOK(下位バイトから復元します) |
-| 漢字 | 文字コード(数値)で指定する |
+字は、文字列として**文字そのもので**照合します(`KEYS` という収録文字の並びから探します)。
+文字コードの数値は読まないので、実機の MakeCode で全角文字の `charCodeAt` が下位1バイトしか返さなくても
+(「仙」と「ベ」が同じになる不具合)、取り違えません。
 
 ```typescript
-kanjiLCD.init(0x27)                                              // アドレスは 0x27 か 0x3F
-kanjiLCD.showCode(20185, 0)                                      // 仙(固定)
-kanjiLCD.showCodes([20185, 21488, 12398, 26085, 26332], 0, 3)   // 仙台の日曜(入る字だけ固定で出る)
-kanjiLCD.showCodeText("20185 21488 12398", 0, 3)                 // 数字の文字列(ブロック用)
-kanjiLCD.showString("あいう", 0, 3)                              // ひらがな・カタカナは文字列でOK
-kanjiLCD.showText("10/13", 11, 1)                                // 英数字
+kanjiLCD.init(0x27)                          // アドレスは 0x27 か 0x3F
+kanjiLCD.showKanji("仙", 0)                  // 漢字もそのまま文字で
+kanjiLCD.showSequence("仙台の日曜", 0, 800)  // 1文字ずつ順に
+kanjiLCD.showText("10/13", 11, 1)            // 英数字
 ```
 
-文字コードは、文字を入れると作ってくれる変換ページが便利です。
-https://claude.ai/artifact/LNsED2TSJU8g2FppmqZHgC
+数字の文字コードで指定したいときは、次も使えます。
 
-どちらの環境か調べるには、`漢字LCD 診断 "あ"` の最後の数字を見ます(0=正常、1=下位1バイトのみ)。
-LCD に出すには `I2C_LCD1602.ShowString(kanjiLCD.debugInfo("あ"), 0, 0)` が使えます。
+```typescript
+kanjiLCD.showCode(20185, 0)                  // 仙(固定)
+kanjiLCD.showCodeText("20185 21488", 0, 3)   // 数字の文字列(ブロック用)
+```
+
+表示されない字があるときは、`漢字LCD 診断 "仙"` で調べられます(「文字列の長さ/文字コード/収録番号/単位」)。
+収録番号が -1 なら、その字は収録されていません。
 
 ## 制約
 
@@ -66,6 +63,7 @@ LCD に出すには `I2C_LCD1602.ShowString(kanjiLCD.debugInfo("あ"), 0, 0)` �
 
 ```bash
 python tools/check_font.py kanjifont.ts                 # コード表・ブロック長・字形の重複を検査
+python tools/add_keys.py kanjifont.ts                   # KEYS(文字で探すための並び)を作り直す。フォントを変えたら必ず実行
 python tools/reblock.py kanjifont.ts 32                 # hexリテラルのブロックの大きさを変える
 python tools/make_font_3x2.py 漢字15x16.ts 最初のコミットのkanjifont.ts kanafont.ts   # 細い15x16で1ファイルに作り直す
 ```

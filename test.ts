@@ -7,5 +7,6 @@ kanjiLCD.showText("10/13", 11, 1)                                // 英数字
 basic.pause(2000)
 // 何文字も出したいときは、1文字ずつ順に切り替えます
 kanjiLCD.showSequence("あいう", 0, 800)
-// 実機では全角の漢字が文字列から判別できないので、漢字は「文字コード」で指定します:
-// kanjiLCD.showCode(20185, 0)                                   // 仙
+// 漢字も文字のまま指定できます
+kanjiLCD.showSequence("仙台の日曜", 0, 800)
+// 数字の文字コードで指定したいとき: kanjiLCD.showCode(20185, 0)    // 仙

@@ -10,15 +10,12 @@
  * たいてい【1文字】(2文字になることは、まれ)。入りきらない字は表示しない。
  * 何文字も出したいときは showSequence(1文字ずつ順に切り替え)を使う。
  *
- * 文字の探し方: 文字コード(Unicode)の数値を、コード表(KANJI_CODES)から二分探索する。
+ * 文字の探し方: 文字列で渡された字は、文字そのもので KEYS(収録文字を並べた文字列)から探す。
+ * (最初のコミットと同じ考え方。文字コードの数値は読まないので、全角の漢字もそのまま文字で指定できる。)
  *
- * 【重要】MakeCode の実機(古い micro:bit 環境)では、文字列に入れた全角文字は下位1バイトしか
- * プログラムに届かないことがある(「仙」0x4ED9 と「ベ」0x30D9 が同じ 0xD9 になる)。
- *   ・文字コードがちゃんと取れる環境 … 文字列(漢字を含む)をそのまま使える
- *   ・下位1バイトしか取れない環境   … ひらがな・カタカナ・記号は文字列から推測して復元できる。
- *                                     漢字は文字列では判別できないので「文字コード」(数値)で指定する
- *                                     (showCode / showCodes / showCodeText。例: 仙 = 20185)。
- *   どちらの環境かは「漢字LCD 診断」の最後の数字(0=正常 1=下位1バイトのみ)で分かる。
+ * 【メモ】MakeCode の実機(micro:bit)では、文字列の全角文字から charCodeAt で数値を読むと、下位1バイトしか
+ * 返らないことがある(「仙」0x4ED9 と「ベ」0x30D9 が同じ 0xD9 になる)。このライブラリは数値を読まない。
+ * 数字の文字コードで指定したいときは showCode / showCodes / showCodeText が使える(例: 仙 = 20185)。
  */
 
 //% weight=90 color=#2E86AB icon="\uf2bb" block="漢字LCD"
@@ -28,7 +25,7 @@ namespace kanjiLCD {
     let customKeys: number[] = []
     let customBufs: Buffer[] = []
     let lastLen = 1
-    let lossy = -1   // 1: 下位1バイトしか取れない環境 / 0: 正常 / -1: 未判定
+    let unit = 0     // 全角1文字が文字列の何単位ぶんか(1 か 3)。0 = 未判定
 
     // 画面に置いた全角文字の一覧(置いた順)。各文字は2桁ぶんの幅。
     let items: number[] = []
@@ -85,30 +82,29 @@ namespace kanjiLCD {
         return -1
     }
 
-    // 文字列の中身の形を判定する(最初の1回だけ)。
-    //   "あ" の長さが2以上 → UTF-8のバイト列(全角1文字=3バイト)
-    //   "あ" の文字コードが256未満 → 下位1バイトしか取れない環境
-    function isLossy(): boolean {
-        if (lossy < 0) lossy = ("あ".length < 3 && "あ".charCodeAt(0) < 256) ? 1 : 0
-        return lossy == 1
+    // 文字列の中身の形(最初の1回だけ判定): 全角1文字が文字列の何単位ぶんか。
+    //   KEYS の長さ = 収録文字数 → 1文字=1単位
+    //   KEYS の長さ = 収録文字数 x 3 → UTF-8のバイト列(全角1文字=3バイト)
+    function getUnit(): number {
+        if (unit == 0) unit = KEYS.length > GLYPH_COUNT ? 3 : 1
+        return unit
     }
 
-    // 文字列 s の i 文字目(UTF-8バイト列なら i バイト目)の文字コード。その文字の長さは lastLen に入る。
+    // 文字列 s の i 文字目から全角1文字を取り出し、その字を【文字そのもの】で KEYS から探して、
+    // Unicode の文字コードを返す。見つからない字(英数字など)は -1 で、1つ進める。
+    // その文字の長さは lastLen に入る。
+    // charCodeAt は使わない: 実機の MakeCode では、全角文字の charCodeAt が下位1バイトしか返さず
+    // (「仙」と「ベ」が同じになる)、数値で扱うと別の字になってしまうため。文字列の検索なら正しく動く。
     function codeAt(s: string, i: number): number {
-        let c = s.charCodeAt(i)
+        let u = getUnit()
         lastLen = 1
-        if ("あ".length >= 3 && c >= 0xE0 && i + 2 < s.length) {
-            // UTF-8 のバイト列として届いている場合: 3バイトを1文字に戻す
-            lastLen = 3
-            return ((c & 0x0F) << 12) | ((s.charCodeAt(i + 1) & 0x3F) << 6) | (s.charCodeAt(i + 2) & 0x3F)
-        }
-        if (isLossy()) {
-            // 下位1バイトしか取れない環境: ひらがな(0x3041〜)・カタカナ(0x30A1〜)・記号(0x3001〜)だけ復元する
-            if (c >= 0x41 && c <= 0x93) return 0x3000 + c
-            if (c >= 0xA1 && c <= 0xFC) return 0x3000 + c
-            if (c >= 0x01 && c <= 0x0F) return 0x3000 + c
-        }
-        return c
+        let ch = s.substr(i, u)
+        if (ch.length < u) return -1
+        let p = KEYS.indexOf(ch)
+        if (p < 0) return -1
+        lastLen = u
+        let idx = u == 3 ? Math.idiv(p, 3) : p
+        return (KANJI_CODES.getUint8(idx * 2) << 8) | KANJI_CODES.getUint8(idx * 2 + 1)
     }
 
     // 文字列 s の最初の1文字の文字コード。空なら -1
@@ -509,7 +505,7 @@ namespace kanjiLCD {
     }
 
     /**
-     * 診断用: 「文字数/文字コード/収録番号/環境」を文字列で返す。環境は 0=文字コードが正常に取れる、1=下位1バイトしか取れない。表示できないときの調査に使う。
+     * 診断用: 「文字列の長さ/文字コード/収録番号/単位」を文字列で返す。文字コードが -1 や収録番号が -1 なら、その字は収録されていない。単位は 1(1文字=1単位) か 3(UTF-8のバイト列)。表示できないときの調査に使う。
      * @param ch 調べる文字, eg: "あ"
      */
     //% blockId=kanjilcd_debug block="漢字LCD 診断 %ch"
@@ -517,7 +513,7 @@ namespace kanjiLCD {
     //% weight=65 advanced=true
     export function debugInfo(ch: string): string {
         let g = firstCode(ch)
-        return "" + ch.length + "/" + g + "/" + findIndex(g) + "/" + (isLossy() ? 1 : 0)
+        return "" + ch.length + "/" + g + "/" + findIndex(g) + "/" + getUnit()
     }
 
     /**
