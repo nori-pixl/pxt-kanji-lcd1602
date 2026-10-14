@@ -4,10 +4,7 @@
  * すべての字(ひらがな・カタカナ・記号・漢字)は 縦2マス x 横3マス(15x16ドット)の、
  * 東雲フォントそのままの細い字(縦横比 2:3)。
  *
- * 表示のしかたは2通り(setMode)。既定は「全部の字を切り替えて表示」: 何文字でも同時に見える。
- * CGRAM に収まらない字は、ページに分けて背景で素早く切り替える(薄く・ちらつく)。
- * 「1文字を固定」にすると、点滅しない(入る字だけを出す)。
- *
+ * 表示は【固定】で、点滅はしない。
  * LCD1602 が自由に使える文字パターン(CGRAM)は8マスだけで、1文字に最大6マス使う。
  * 空白のマスはCGRAMを使わず、同じ形のマスは共有するが、それでも同時に固定して出せるのは
  * たいてい【1文字】(2文字になることは、まれ)。入りきらない字は表示しない。
@@ -23,13 +20,6 @@
 
 //% weight=90 color=#2E86AB icon="\uf2bb" block="漢字LCD"
 namespace kanjiLCD {
-    export enum KanjiMode {
-        //% block="全部の字を切り替えて表示"
-        All = 0,
-        //% block="1文字を固定(点滅なし)"
-        Fixed = 1
-    }
-
     let addr = 0x27
     let backlight = 0x08
     let customKeys: number[] = []
@@ -40,6 +30,8 @@ namespace kanjiLCD {
     // 画面に置いた全角文字の一覧(置いた順)。各文字は2桁ぶんの幅。
     let items: number[] = []
     let cols: number[] = []
+    // いま画面に描いている桁(消すときに使う)
+    let shown: number[] = []
     let q: number[] = []   // まとめて送るI2Cのバイト列
     const cells = 3   // 1文字の横のマス数(縦は2マス)
 
@@ -152,23 +144,12 @@ namespace kanjiLCD {
         return (buf.getUint8(byte) >> (7 - (bitpos & 7))) & 1
     }
 
-    // ---------- 配置と描画 ----------
-    // 表示モード(setMode):
-    //   0 = 全部の字を表示する。CGRAM(8個)に収まらないときは、字をいくつかの「ページ」に分けて、
-    //       背景で素早く切り替える(そのぶん薄くなり、ちらつく)。ページ数がいちばん少なくなるように詰める。
-    //   1 = 点滅なしの固定表示。入る字だけを出す。
-    let mode = 0
-    let pageMs = 0
-    let gen = 0                          // 配置を変えるたびに増やす。背景の切り替えは、これが変わると止まる
-    let looping = false
-
-    let iKeys: string[][] = []           // 字ごとの6マスの形("" = 空白マス)
-    let iRows: number[][][] = []         // 字ごとの6マスの中身(8行 x 5ビット)
-    let pItems: number[][] = []          // ページごとの、字の番号(items の添字)
-    let pKeys: string[][] = []           // ページごとの、使うマスの形(最大8個)
-    let pRows: number[][][] = []         // 上の中身
-    let curKeys: string[] = []           // いま CGRAM 0..7 に入っている形
-    let curByCol: number[][] = []        // いま各桁に出している6マスの文字コード([] = 何も出していない)
+    // ---------- 配置と描画(固定表示。点滅しない) ----------
+    // 字ごとの6マス(縦2 x 横3)のうち、空白のマスは 0x20(空白文字)、それ以外は CGRAM(最大8個)に
+    // 割り当てる。同じ形のマスは1つのCGRAMを共有する。入りきらない字は表示しない。
+    let slotKeys: string[] = []     // CGRAM 0..7 の中身の識別子
+    let slotRows: number[][] = []   // CGRAM 0..7 の中身(8行 x 5ビット)
+    let plan: number[][] = []       // items と同じ順。各字の6マスの文字コード(置けない字は空の配列)
 
     // 字 g の (cx, ry) のマスの8行を返す。g が見つからなければ空の配列
     function cellRows(g: number, cx: number, ry: number): number[] {
@@ -206,202 +187,75 @@ namespace kanjiLCD {
         for (let i = 0; i < cells; i++) qsend(0x20, 1)
         qsend(0xC0 | col, 0)
         for (let i = 0; i < cells; i++) qsend(0x20, 1)
-        curByCol[col] = []
     }
 
-    // 字ごとの6マスの形を調べる
-    function prepare() {
-        iKeys = []
-        iRows = []
-        for (let i = 0; i < items.length; i++) {
+    // 置く字を決める。newestFirst=true なら新しく置いた字を優先、false なら置いた順に優先。
+    function layout(newestFirst: boolean) {
+        slotKeys = []
+        slotRows = []
+        plan = []
+        let n = items.length
+        for (let i = 0; i < n; i++) plan.push([])
+        for (let t = 0; t < n; t++) {
+            let i = newestFirst ? n - 1 - t : t
             let keys: string[] = []
             let rowsOf: number[][] = []
+            let fresh: string[] = []
+            let ok = true
             for (let c = 0; c < 6; c++) {
                 let rows = cellRows(items[i], c % 3, c < 3 ? 0 : 1)
                 if (rows.length == 0) {
-                    keys = []
-                    rowsOf = []
+                    ok = false
                     break
                 }
-                keys.push(isBlankRows(rows) ? "" : rows.join(","))
+                let key = isBlankRows(rows) ? "" : rows.join(",")
+                keys.push(key)
                 rowsOf.push(rows)
+                if (key != "" && slotKeys.indexOf(key) < 0 && fresh.indexOf(key) < 0) fresh.push(key)
             }
-            iKeys.push(keys)
-            iRows.push(rowsOf)
-        }
-    }
-
-    // その字が使う形(重複なし・空白なし)
-    function needOf(i: number): string[] {
-        let r: string[] = []
-        for (let c = 0; c < iKeys[i].length; c++) {
-            if (iKeys[i][c] != "" && r.indexOf(iKeys[i][c]) < 0) r.push(iKeys[i][c])
-        }
-        return r
-    }
-
-    // 字をページに分ける。mode=1(固定)なら最初のページだけ。
-    function buildPages(newestFirst: boolean) {
-        pItems = []
-        pKeys = []
-        pRows = []
-        let n = items.length
-        let order: number[] = []
-        for (let t = 0; t < n; t++) order.push(newestFirst ? n - 1 - t : t)
-        if (mode == 0) {
-            // 使う形が多い字から先に詰めると、ページ数が少なくなる(挿入ソート)
-            for (let a = 1; a < order.length; a++) {
-                let v = order[a]
-                let nv = needOf(v).length
-                let b = a - 1
-                while (b >= 0 && needOf(order[b]).length < nv) {
-                    order[b + 1] = order[b]
-                    b--
-                }
-                order[b + 1] = v
-            }
-        }
-        for (let t = 0; t < order.length; t++) {
-            let i = order[t]
-            if (iKeys[i].length == 0) continue
-            let need = needOf(i)
-            let placed = false
-            for (let p = 0; p < pItems.length && !placed; p++) {
-                let fresh = 0
-                for (let k = 0; k < need.length; k++) {
-                    if (pKeys[p].indexOf(need[k]) < 0) fresh++
-                }
-                if (pKeys[p].length + fresh <= 8) {
-                    for (let c = 0; c < 6; c++) {
-                        if (iKeys[i][c] != "" && pKeys[p].indexOf(iKeys[i][c]) < 0) {
-                            pKeys[p].push(iKeys[i][c])
-                            pRows[p].push(iRows[i][c])
-                        }
-                    }
-                    pItems[p].push(i)
-                    placed = true
-                }
-            }
-            if (!placed && !(mode == 1 && pItems.length >= 1)) {
-                let keys: string[] = []
-                let rows: number[][] = []
-                for (let c = 0; c < 6; c++) {
-                    if (iKeys[i][c] != "" && keys.indexOf(iKeys[i][c]) < 0) {
-                        keys.push(iKeys[i][c])
-                        rows.push(iRows[i][c])
-                    }
-                }
-                pItems.push([i])
-                pKeys.push(keys)
-                pRows.push(rows)
-            }
-        }
-    }
-
-    // ページ p を画面に出す。変わる部分だけを、まとめて1回で送る。
-    function drawPage(p: number) {
-        let want = pKeys[p]
-        // 1) このページで使う形に、CGRAM の番号を割り当てる(すでに入っている形は、そのまま使う)
-        let assign: number[] = []
-        let used: boolean[] = []
-        for (let j = 0; j < 8; j++) used.push(false)
-        for (let k = 0; k < want.length; k++) {
-            let j = curKeys.indexOf(want[k])
-            assign.push(j)
-            if (j >= 0) used[j] = true
-        }
-        let writeSlots: number[] = []     // 中身を書き換える CGRAM 番号
-        let writeKeys: number[] = []      // その形(want の添字)
-        for (let k = 0; k < want.length; k++) {
-            if (assign[k] >= 0) continue
-            let j = 0
-            while (used[j]) j++
-            used[j] = true
-            assign[k] = j
-            writeSlots.push(j)
-            writeKeys.push(k)
-        }
-        // 2) これから書き換える CGRAM を使っている桁は、先に空白にする(乱れて見えるのを避ける)
-        for (let col = 0; col < 16; col++) {
-            let cur = curByCol[col]
-            if (!cur || cur.length == 0) continue
+            if (!ok || slotKeys.length + fresh.length > 8) continue    // 入らない字は出さない
             for (let c = 0; c < 6; c++) {
-                if (cur[c] < 8 && writeSlots.indexOf(cur[c]) >= 0) {
-                    qblankAt(col)
-                    break
+                if (keys[c] != "" && slotKeys.indexOf(keys[c]) < 0) {
+                    slotKeys.push(keys[c])
+                    slotRows.push(rowsOf[c])
                 }
             }
-        }
-        // 3) 使わなくなった桁を空白にする
-        for (let col = 0; col < 16; col++) {
-            let cur = curByCol[col]
-            if (!cur || cur.length == 0) continue
-            let keep = false
-            for (let t = 0; t < pItems[p].length; t++) {
-                if (cols[pItems[p][t]] == col) keep = true
-            }
-            if (!keep) qblankAt(col)
-        }
-        // 4) CGRAM の書き換え
-        for (let w = 0; w < writeSlots.length; w++) {
-            qsend(0x40 | (writeSlots[w] << 3), 0)
-            for (let y = 0; y < 8; y++) qsend(pRows[p][writeKeys[w]][y], 1)
-            curKeys[writeSlots[w]] = want[writeKeys[w]]
-        }
-        // 5) このページの字を出す(変わるときだけ)
-        for (let t = 0; t < pItems[p].length; t++) {
-            let i = pItems[p][t]
-            let col = cols[i]
             let codes: number[] = []
-            for (let c = 0; c < 6; c++) codes.push(iKeys[i][c] == "" ? 0x20 : assign[want.indexOf(iKeys[i][c])])
-            let cur = curByCol[col]
-            let same = cur && cur.length == 6
-            for (let c = 0; same && c < 6; c++) {
-                if (cur[c] != codes[c]) same = false
-            }
-            if (same) continue
-            qsend(0x80 | col, 0)
-            for (let c = 0; c < 3; c++) qsend(codes[c], 1)         // 上段
-            qsend(0xC0 | col, 0)
-            for (let c = 3; c < 6; c++) qsend(codes[c], 1)         // 下段
-            curByCol[col] = codes
+            for (let c = 0; c < 6; c++) codes.push(keys[c] == "" ? 0x20 : slotKeys.indexOf(keys[c]))
+            plan[i] = codes
         }
-        qsend(0x80, 0)
-        flush()
     }
 
-    // 背景で、ページを順に切り替え続ける
-    function startLoop() {
-        if (looping) return
-        looping = true
-        control.inBackground(function () {
-            while (pItems.length > 1) {
-                let g = gen
-                for (let p = 0; p < pItems.length; p++) {
-                    if (g != gen) break
-                    drawPage(p)
-                    basic.pause(pageMs)
-                }
-            }
-            looping = false
-        })
+    // plan を画面に反映する(まとめて1回で送る)
+    function draw() {
+        let used: number[] = []
+        for (let i = 0; i < plan.length; i++) {
+            if (plan[i].length > 0) used.push(cols[i])
+        }
+        for (let i = 0; i < shown.length; i++) {
+            if (used.indexOf(shown[i]) < 0) qblankAt(shown[i])    // 今回は使わなくなった桁を消す
+        }
+        for (let k = 0; k < slotRows.length; k++) {
+            qsend(0x40 | (k << 3), 0)                              // CGRAM k
+            for (let y = 0; y < 8; y++) qsend(slotRows[k][y], 1)
+        }
+        for (let i = 0; i < plan.length; i++) {
+            if (plan[i].length == 0) continue
+            qsend(0x80 | cols[i], 0)
+            for (let c = 0; c < 3; c++) qsend(plan[i][c], 1)       // 上段
+            qsend(0xC0 | cols[i], 0)
+            for (let c = 3; c < 6; c++) qsend(plan[i][c], 1)       // 下段
+        }
+        qsend(0x80, 0)                                             // 最後はDDRAMの位置に戻す
+        shown = used
+        flush()
     }
 
     // 配置を変えたあとに画面へ反映する。showLast=true なら最後に置いた字を優先する。
     function refresh(showLast: boolean) {
         if (items.length == 0) return
-        gen++
-        prepare()
-        buildPages(showLast)
-        if (pItems.length == 0) {
-            for (let col = 0; col < 16; col++) {
-                if (curByCol[col] && curByCol[col].length > 0) qblankAt(col)
-            }
-            flush()
-            return
-        }
-        if (pItems.length == 1) drawPage(0)       // 1ページなら固定表示(点滅しない)
-        else startLoop()
+        layout(showLast)
+        draw()
     }
 
     // 文字を配置に追加(桁が重なる古い字は取り除く)。描画はしない。
@@ -433,12 +287,8 @@ namespace kanjiLCD {
         addr = address
         items = []
         cols = []
-        gen++
-        pItems = []
-        pKeys = []
-        pRows = []
-        curKeys = []
-        curByCol = []
+        shown = []
+        plan = []
         basic.pause(50)
         nib(0x30, 0)
         basic.pause(5)
@@ -465,12 +315,8 @@ namespace kanjiLCD {
         basic.pause(2)
         items = []
         cols = []
-        gen++
-        pItems = []
-        pKeys = []
-        pRows = []
-        curKeys = []
-        curByCol = []
+        shown = []
+        plan = []
     }
 
     /**
@@ -602,27 +448,13 @@ namespace kanjiLCD {
     }
 
     /**
-     * 字を切り替える間の待ち(ミリ秒)。0 = できるだけ速く切り替える(ちらつきがいちばん少ない)。
-     * @param ms 待ち時間, eg: 0
+     * (互換用・何もしない)以前の版で、字を切り替える間隔を決めていた。現在は点滅させないので使われない。
+     * @param ms 無視される, eg: 0
      */
-    //% blockId=kanjilcd_pagems block="漢字LCD 切り替えの間隔 %ms ms"
+    //% blockId=kanjilcd_pagems block="漢字LCD 切り替えの間隔 %ms ms(使われない)"
     //% ms.defl=0 ms.min=0 ms.max=10000
-    //% weight=60 advanced=true
+    //% weight=1 advanced=true deprecated=true
     export function setPageTime(ms: number) {
-        pageMs = ms
-    }
-
-    /**
-     * 表示のしかたを選ぶ。
-     * 「全部を切り替えて表示」: 何文字でも同時に見える(薄く、ちらつく)。
-     * 「1文字を固定」: 点滅しない。入る字(たいてい1文字)だけを出す。
-     * @param m 表示のしかた
-     */
-    //% blockId=kanjilcd_mode block="漢字LCD 表示のしかた %m"
-    //% weight=62 advanced=true
-    export function setMode(m: KanjiMode) {
-        mode = m
-        if (items.length > 0) refresh(true)
     }
 
     /**
